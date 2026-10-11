@@ -6,15 +6,75 @@ export const SITE = {
   tagline: 'Precision Engineering Products', // brochure cover. Business card says "Powering Industrial Partnerships" (confirm).
   phone: '+91 98847 71672',
   phoneRaw: '+919884771672',
-  whatsapp: '919884771672', // TODO: confirm the WhatsApp number is the same as the phone number
+  whatsapp: '919884771672', // +91 98847 71672 (confirmed) — same number as voice
   email: 'vectronmotors@gmail.com',
   address: ['No. 1/169A, Sri Krishna Garden', 'Tharapakkam, Chennai – 600128'],
   addressLine: 'No. 1/169A, Sri Krishna Garden, Tharapakkam, Chennai – 600128',
   siteUrl: '', // TODO: set the live domain (enables canonical, og:url and sitemap.xml)
 };
 
+/* Central brand-asset paths — replace files in place; keep these filenames.
+   To swap the logo later, only replace assets/img/vectron-logo.png (same file
+   name) or update the paths here. Dimensions below keep the <img> reserved
+   size honest so the header never distorts or shifts. */
+export const ASSETS = {
+  logo: 'assets/img/vectron-logo.png',
+  logoAlt: 'Vectron — Precision Engineering Products',
+  logoW: 420, // intrinsic px of vectron-logo.png (do not shrink the artwork)
+  logoH: 235,
+  favicon: 'assets/favicon.png',           // 512x512, transparent
+  faviconIco: 'assets/favicon.ico',        // 16/32/48 multi-size
+  appleTouch: 'assets/apple-touch-icon.png', // 180x180, opaque
+  og: 'assets/img/og.jpg',
+};
+
+/* Brand tokens — single source of truth for the palette. Sampled from the
+   logo artwork (light background, deep indigo wordmark, blue + orange marks)
+   so every surface, type colour and accent complements the logo. */
+export const BRAND = {
+  ink: '#17181f',      // deep charcoal
+  ink2: '#101117',     // deeper charcoal (dark sections)
+  paper: '#f6f4ef',    // warm off-white
+  white: '#ffffff',
+  blue: '#2aa0dd',     // logo blue
+  blueDeep: '#1773a8', // pressed / on-light accent
+  purple: '#54406b',   // restrained purple detail
+  orange: '#e85020',   // logo orange, used sparingly
+  font: "'Manrope',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif",
+};
+
 export const wa = (text) =>
   `https://wa.me/${SITE.whatsapp}?text=${encodeURIComponent(text)}`;
+
+/* Opens the visitor's own device mail app, pre-addressed and pre-filled, so
+   they can review the message and send it themselves. Nothing is sent here. */
+export const mail = (subject = 'Enquiry from website', body = '') =>
+  `mailto:${SITE.email}?subject=${encodeURIComponent(subject)}${body ? `&body=${encodeURIComponent(body)}` : ''}`;
+
+/* Technical line-art diagrams (SVG) owned by this project — illustrative
+   schematics, not product photographs and not specifications. */
+export const DIAGRAMS = {
+  drive: 'assets/img/drive-line.svg',         // VFD → motor → gearbox → load
+  motorCut: 'assets/img/motor-cutaway.svg',   // induction motor section study
+  gears: 'assets/img/geartrain.svg',          // meshing helical gear pair
+  gearbox: 'assets/img/gearbox-exploded.svg', // single-stage gearbox, exploded
+  ro: 'assets/img/ro-train.svg',              // RO train with APP pump + iSave
+};
+
+/* The 3S of Vectron (from the brochure) — the compact "what we do" line. */
+export const PILLARS = [
+  { t: 'Solution', d: 'Customised to your business needs' },
+  { t: 'Sourcing', d: 'A variety of procured products' },
+  { t: 'Service', d: 'Support across the lifecycle' },
+];
+
+/* What Vectron services (as stated in the brochure). */
+export const SERVICE_LINES = [
+  { k: '01', t: 'Motors', d: 'Servicing of the listed motor brands', to: 'motors' },
+  { k: '02', t: 'Gearboxes', d: 'Servicing of the listed gear and gear box brands', to: 'gearboxes' },
+  { k: '03', t: 'VFDs', d: 'Servicing of the listed variable frequency drives', to: 'vfds' },
+  { k: '04', t: 'High-pressure pumps', d: 'Servicing of the listed pump brand', to: 'pumps' },
+];
 
 export const CATEGORIES = [
   {
@@ -24,7 +84,7 @@ export const CATEGORIES = [
     short: 'Motors',
     blurb: 'IE2, IE3 and IE4 efficiency classes, plus crane, flameproof, brake and smoke venting duty.',
     types: ['IE2 · IE3 · IE4', 'Flameproof', 'Crane duty', 'Brake', 'Smoke venting'],
-    img: 'motor-abb-std.jpg',
+    img: 'motor-abb-std-cutout.png',
     imgAlt: 'Blue industrial induction motor shown from the shaft end',
     brands: ['ABB', 'CG', 'Innomotics', 'Hindustan Electric Motors', 'WEG', 'Marathon', 'Havells', 'Bonfiglioli'],
   },
@@ -46,7 +106,7 @@ export const CATEGORIES = [
     short: 'Gearboxes',
     blurb: 'Helical bevel, in-line, parallel shaft, worm and planetary units, from compact gearmotors to heavy-duty gear units.',
     types: ['Helical bevel', 'In-line', 'Worm', 'Planetary', 'Shaft mounted'],
-    img: 'gearboxes-bonfiglioli.jpg',
+    img: 'gearboxes-bonfiglioli-cutout.png',
     imgAlt: 'Assortment of industrial gearboxes and geared motors',
     brands: ['Bonfiglioli', 'Shanthi Gears', 'Top Gear Transmission', 'Bauer Gear Motor'],
   },
@@ -63,19 +123,25 @@ export const CATEGORIES = [
   },
 ];
 
+/* Manufacturer logos live in assets/img/brands/ and are the property of their
+   respective owners (see the footer note). Each is shown in greyscale and
+   reveals its brand colour on hover/focus. If a file is ever missing the page
+   falls back to the brand name as a wordmark, so the wall never breaks. */
+export const BRAND_LOGO_DIR = 'assets/img/brands/';
+
 export const BRANDS = [
-  { name: 'ABB', cats: ['motors'] },
-  { name: 'CG', cats: ['motors'] },
-  { name: 'Innomotics', note: 'Siemens LV motors', cats: ['motors'] },
-  { name: 'Hindustan Electric Motors', cats: ['motors'] },
-  { name: 'WEG', cats: ['motors'] },
-  { name: 'Marathon', cats: ['motors'] },
-  { name: 'Havells', cats: ['motors'] },
-  { name: 'Danfoss', cats: ['vfds', 'pumps'] },
-  { name: 'Bonfiglioli', cats: ['gearboxes', 'motors'] },
-  { name: 'Shanthi Gears', cats: ['gearboxes'] },
-  { name: 'Top Gear Transmission', cats: ['gearboxes'] },
-  { name: 'Bauer Gear Motor', cats: ['gearboxes'] },
+  { name: 'ABB', logo: 'abb.svg', cats: ['motors'] },
+  { name: 'CG', logo: 'cg.svg', cats: ['motors'] },
+  { name: 'Innomotics', logo: 'innomotics.svg', note: 'Siemens LV motors', cats: ['motors'] },
+  { name: 'Hindustan Electric Motors', logo: 'hem.png', cats: ['motors'] },
+  { name: 'WEG', logo: 'weg.svg', cats: ['motors'] },
+  { name: 'Marathon', logo: 'marathon.svg', cats: ['motors'] },
+  { name: 'Havells', logo: 'havells.svg', cats: ['motors'] },
+  { name: 'Danfoss', logo: 'danfoss.svg', cats: ['vfds', 'pumps'] },
+  { name: 'Bonfiglioli', logo: 'bonfiglioli.png', cats: ['gearboxes', 'motors'] },
+  { name: 'Shanthi Gears', logo: 'shanthi.png', cats: ['gearboxes'] },
+  { name: 'Top Gear Transmission', logo: 'topgear.png', cats: ['gearboxes'] },
+  { name: 'Bauer Gear Motor', logo: 'bauer.png', cats: ['gearboxes'] },
 ];
 
 // ---------------- Motors ----------------
@@ -167,7 +233,7 @@ export const FLOW = [
   { k: 'Torque', t: 'Gearboxes', d: 'Gearmotors and gear units that turn speed into usable torque.', to: 'gearboxes' },
   { k: 'Motion', t: 'Drives', d: 'Variable frequency drives that control how machines move.', to: 'vfds' },
   { k: 'Efficiency', t: 'Less energy loss', d: 'Modern VFDs, smart motors and energy recovery for reduced consumption.', to: 'pumps' },
-  { k: 'Uptime', t: 'Lifecycle support', d: 'Servicing and technical advice that keep production running.', to: 'services' },
+  { k: 'Uptime', t: 'Lifecycle support', d: 'Servicing and technical advice that keep production running.', to: 'services', top: true },
 ];
 
 export const NAV = [

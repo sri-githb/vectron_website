@@ -1,0 +1,14 @@
+{
+  "name": "vectron-site",
+  "version": "1.0.0",
+  "description": "Vectron precision engineering products website",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node serve.mjs",
+    "dev": "node serve.mjs --watch"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

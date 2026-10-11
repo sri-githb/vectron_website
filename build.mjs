@@ -29,6 +29,7 @@ writeFileSync(join(out, '404.html'), P.notFound());
 
 cpSync('assets/img', join(out, 'assets/img'), { recursive: true });
 cpSync('src/static', join(out, 'assets'), { recursive: true });
+cpSync('src/static/favicon.ico', join(out, 'favicon.ico')); // fallback for /favicon.ico requests
 
 if (SITE.siteUrl) {
   const u = SITE.siteUrl.replace(/\/$/, '');

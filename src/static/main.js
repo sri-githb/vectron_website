@@ -22,7 +22,7 @@
     if (bar) bar.parentElement.style.setProperty('--p', max > 0 ? (y / max).toFixed(4) : 0);
     if (bar) bar.style.setProperty('--p', max > 0 ? (y / max).toFixed(4) : 0);
     const wa = $('[data-wa]');
-    if (wa) wa.classList.toggle('is-away', y < 200 && !!$('.hero'));
+    if (wa) wa.classList.toggle('is-away', y < 280 && !!$('[data-hero-pin], .hero'));
     parallax();
     flowProgress();
     ticking = false;
@@ -95,14 +95,6 @@
     play();
   }
 
-  /* solution universe accordion (desktop hover/focus; stacked on mobile) */
-  const uni = $('[data-uni]');
-  if (uni) {
-    const ps = $$('[data-uni-p]', uni);
-    const act = (p) => ps.forEach((x) => x.classList.toggle('is-active', x === p));
-    ps.forEach((p) => { p.addEventListener('mouseenter', () => act(p)); p.addEventListener('focus', () => act(p)); });
-  }
-
   /* engineering flow: line fills with scroll, steps light up in turn */
   const flow = $('[data-flow]');
   const flowSteps = flow ? $$('[data-flow-step]', flow) : [];
@@ -166,17 +158,26 @@
       document.addEventListener('pointerleave', () => cur.classList.remove('is-on'));
       const tick = () => { cx += (x - cx) * 0.22; cy += (y - cy) * 0.22; cur.style.transform = `translate3d(${cx}px,${cy}px,0)`; requestAnimationFrame(tick); };
       tick();
-      document.addEventListener('pointerover', (e) => cur.classList.toggle('is-big', !!e.target.closest('a,button,summary,[data-uni-p]')));
+      document.addEventListener('pointerover', (e) => cur.classList.toggle('is-big', !!e.target.closest('a,button,summary')));
     }
   }
 
-  /* enquiry form: composes a WhatsApp or email message; nothing is sent to a server */
+  /* enquiry form: opens the visitor's own mail app or WhatsApp, pre-filled;
+     nothing is sent to a server */
   const form = $('[data-enquiry]');
   if (form) {
     const q = new URLSearchParams(location.search).get('product');
     const sel = form.elements.product;
     if (q) { [...sel.options].some((o) => o.text === q && (sel.value = o.value)) || (form.elements.message.value = `I would like to know more about ${q}.`); }
     const err = $('[data-form-err]', form);
+    const submitLabel = $('[data-submit-label]', form);
+    const viaInputs = $$('[name=via]', form);
+    const syncSubmit = () => {
+      const v = (form.querySelector('[name=via]:checked') || {}).value;
+      if (submitLabel) submitLabel.textContent = v === 'whatsapp' ? 'Send enquiry on WhatsApp' : 'Send enquiry by email';
+    };
+    viaInputs.forEach((i) => i.addEventListener('change', syncSubmit));
+    syncSubmit();
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       const f = form.elements;
@@ -188,17 +189,23 @@
         bad[0].focus(); return;
       }
       err.hidden = true;
+      const name = f.name.value.trim();
+      const product = f.product.value;
       const lines = [
         'Hi Vectron, I would like to enquire.',
-        `Name: ${f.name.value.trim()}`,
+        `Name: ${name}`,
         f.company.value.trim() && `Company: ${f.company.value.trim()}`,
         `Phone / email: ${f.contact.value.trim()}`,
-        f.product.value && `Requirement: ${f.product.value}`,
+        product && `Requirement: ${product}`,
         f.message.value.trim() && `Message: ${f.message.value.trim()}`,
       ].filter(Boolean).join('\n');
-      const via = form.querySelector('[name=via]:checked').value;
-      if (via === 'email') location.href = `mailto:${MAIL}?subject=${encodeURIComponent('Enquiry from website' + (f.product.value ? ': ' + f.product.value : ''))}&body=${encodeURIComponent(lines)}`;
-      else window.open(`https://wa.me/${WA}?text=${encodeURIComponent(lines)}`, '_blank', 'noopener');
+      const subject = `Enquiry from website — ${product || name}`;
+      const via = (form.querySelector('[name=via]:checked') || {}).value;
+      if (via === 'whatsapp') {
+        window.open(`https://wa.me/${WA}?text=${encodeURIComponent(lines)}`, '_blank', 'noopener');
+      } else {
+        location.href = `mailto:${MAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(lines)}`;
+      }
     });
   }
 
