@@ -1,23 +1,21 @@
-/* Vectron hero — realistic industrial product visualization.
-   A scroll-driven exploded → assembled study of an industrial electric motor
-   coupled to a gearbox — the machines Vectron supplies. Rendered as a studio
-   product shot: painted motor housing with cooling fins, terminal box, end
-   shields and feet; rotor with keyed shaft; flexible coupling; cast-iron
-   gearbox with top cover, breather, inspection hatch, output flange and
-   stepped output shaft.
+/* Vectron hero — real 3D geared motor (WebGL, zero dependencies).
 
-   Canvas 2D, zero dependencies. Software-lit materials (key + rim light),
-   metallic gradients, contact shadows and a ground plane. The drawing is
-   auto-calibrated to stay large and centred at any size.
+   The mesh is the supplied Rossi MR 2IV geared-motor STEP model, converted to
+   triangles (see motor-model.js). 12 separate solids: gearbox housing, motor
+   adapter flange, motor frame, B5 shield, fan covers, terminal box, rating
+   plate, shafts, seals.
 
-   Scroll        0 → 1  explodes → assembles
-   Reduced motion       static, assembled
-   Mobile               auto-assembles once in view, lighter detail
-   Palette from CSS tokens so it always matches the logo-led brand. */
+   Scroll        0 → 1  exploded → assembled (staggered, eased per part)
+   Drag          orbit the model (touch: horizontal drag; vertical still scrolls)
+   Hover         part highlight + name
+   Double-click  reset view
+   Reduced motion  static, assembled
+   Mobile        auto-assembles once in view
+   Colours come from the site's CSS tokens so the model always matches the brand. */
 (() => {
   const root = document.querySelector('[data-assembly]');
+  const MODEL = window.VECTRON_MOTOR;
   if (!root) return;
-
   const canvas = root.querySelector('[data-assembly-canvas]');
   const bar = document.querySelector('[data-assembly-bar]');
   const label = document.querySelector('[data-assembly-label]');
@@ -26,762 +24,570 @@
   if (!canvas || !pin) return;
 
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const coarse = matchMedia('(pointer: coarse)').matches;
-  const fitter = coarse || matchMedia('(hover: none)').matches;
-  let ctx = canvas.getContext('2d', { alpha: true });
-  let dpr = 1, W = 0, H = 0;
-  let progress = reduce ? 1 : 0;
-  let target = progress;
-  let raf = 0, time = 0, last = performance.now();
-  let Sbase = 34;
-  let originX = 0, originY = 0;
-  const pointer = { x: 0, y: 0, tx: 0, ty: 0 };
-
-  /* ---- palette from design tokens + product materials ---- */
-  const css = () => getComputedStyle(document.documentElement);
-  const C = {
-    ink: css().getPropertyValue('--ink').trim() || '#17181f',
-    blue: css().getPropertyValue('--acc').trim() || '#2aa0dd',
-    blueD: css().getPropertyValue('--acc-d').trim() || '#1773a8',
-    orange: css().getPropertyValue('--orange').trim() || '#e85020',
-  };
-  const M = {
-    paint: '#2f7fb5',      // painted motor housing (logo blue family)
-    paintD: '#1f689c',
-    paintL: '#5aa4d4',
-    iron: '#454c53',       // gearbox cast iron
-    ironD: '#2f353b',
-    ironL: '#60686f',
-    steel: '#9aa5ad',      // machined steel
-    steelD: '#5f676e',
-    steelL: '#cdd5da',
-    alum: '#b8c0c6',       // aluminium end shields
-    alumD: '#8a9299',
-    chrome: '#e8edf1',     // polished shaft / flange faces
-    chromeD: '#aeb8c0',
-    spider: C.orange,      // flexible coupling element
-  };
-
-  /* ---- parts: assembled placement + explode vectors (world units).
-     x = drive axis, y = height (down-screen positive), z = depth.
-     The fan, motor and its terminal box slide back (−x); the rotor & shaft,
-     coupling and gearbox slide forward (+x); the terminal box and gearbox
-     cover additionally lift — mechanically logical axes.
-     term ships inside motor, cover inside casing (drawn last, always on top). */
-  const parts = [
-    { id: 'fan',    ex: -1.55, ey: 0.00, ez: 0.00, cx: -3.55, cy: 1.62, cz: 0.00 },
-    { id: 'motor',  ex: -1.10, ey: 0.00, ez: 0.00, cx: -2.12, cy: 1.62, cz: 0.00 },
-    { id: 'rotor',  ex:  0.95, ey: 0.00, ez: 0.00, cx: -0.45, cy: 1.62, cz: 0.00 },
-    { id: 'coupler', ex:  0.95, ey: 0.00, ez: 0.00, cx:  0.30, cy: 1.62, cz: 0.00 },
-    { id: 'casing', ex:  0.95, ey: 0.00, ez: 0.00, cx:  1.70, cy: 1.78, cz: 0.00 },
-  ];
-  const yM = 1.62;     // motor / input centreline
-  const yOut = 2.20;   // gearbox output centreline
-  const plateTop = 2.62;
-
-  const ease = (t) => 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 2.6);
+  const fine = matchMedia('(hover: hover) and (pointer: fine)').matches && !reduce;
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-  const stepsOf = () => (fitter ? 16 : 26);
-  const S = () => Sbase;
+  const mix = (a, b, t) => a + (b - a) * t;
+  const easeOut = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+  const easeIO = (t) => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
 
+  /* ---- graceful fallback (no WebGL / no model) ---- */
+  function fallback() {
+    root.classList.add('is-fallback');
+    const src = root.getAttribute('data-fallback');
+    if (src && !root.querySelector('.hero__fallback-img')) {
+      const im = new Image();
+      im.src = src; im.alt = ''; im.className = 'hero__fallback-img';
+      root.appendChild(im);
+    }
+    canvas.style.display = 'none';
+    if (bar) bar.style.transform = 'scaleX(1)';
+    if (label) label.textContent = '';
+  }
+  const gl = MODEL && canvas.getContext('webgl', { antialias: true, alpha: true, premultipliedAlpha: true, powerPreference: 'high-performance' });
+  if (!gl) { fallback(); return; }
+
+  /* ---- palette from design tokens ---- */
+  const css = getComputedStyle(document.documentElement);
+  const tok = (n, d) => (css.getPropertyValue(n).trim() || d);
+  const hex = (h) => { const n = parseInt(h.replace('#', '').slice(0, 6), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => v / 255); };
+  const lin = (c) => c.map((v) => Math.pow(v, 2.2));
+  const C = {
+    blue: hex(tok('--acc-d', '#1773a8')),
+    blueL: hex(tok('--acc', '#2aa0dd')),
+    ink: hex(tok('--ink', '#17181f')),
+    purple: hex(tok('--purple', '#54406b')),
+    orange: hex(tok('--orange', '#e85020')),
+  };
+  const lift = (c, k) => c.map((v) => clamp(v * k, 0, 1));
+  /* material: [r,g,b (sRGB), metallic, roughness, clearcoat] */
+  const MAT = {
+    blue: [...lift(C.blue, 1.04), 0.30, 0.34, 0.65],
+    char: [...mix3(C.ink, [0.30, 0.32, 0.40], 0.62), 0.45, 0.36, 0.55],
+    steel: [0.86, 0.89, 0.92, 1.0, 0.22, 0],
+    zinc: [0.76, 0.80, 0.84, 0.88, 0.36, 0],
+    rubber: [0.07, 0.075, 0.09, 0.0, 0.62, 0],
+    plate: [0.93, 0.94, 0.96, 0.6, 0.30, 0],
+  };
+  function mix3(a, b, t) { return [mix(a[0], b[0], t), mix(a[1], b[1], t), mix(a[2], b[2], t)]; }
+
+  /* ---- parts (index = order in the model file) ----
+     mats: how the 4 source colours (brochure blue, light grey, black, mid grey) are painted
+     ex:   explode offset in mm (x = motor axis, y up, z = output-shaft axis)
+     d:    arrival delay 0..1 (0 arrives first) */
+  const P = [
+    { n: 'Gearbox housing',        mats: ['char', 'zinc', 'rubber', 'steel'], ex: [0, 0, 0], d: 0 },
+    { n: 'Motor adapter flange',   mats: ['char', 'zinc', 'rubber', 'steel'], ex: [-60, 0, 0], d: 0.42 },
+    { n: 'Motor frame',            mats: ['blue', 'zinc', 'rubber', 'steel'], ex: [-170, 0, 0], d: 0.66 },
+    { n: 'B5 drive-end shield',    mats: ['blue', 'zinc', 'rubber', 'steel'], ex: [-115, 0, 0], d: 0.54 },
+    { n: 'Motor shaft',            mats: ['steel', 'steel', 'steel', 'steel'], ex: [-40, 175, 0], d: 0.32 },
+    { n: 'Motor fan cover',        mats: ['blue', 'zinc', 'rubber', 'steel'], ex: [-235, 0, 0], d: 1.0 },
+    { n: 'Rating plate',           mats: ['plate', 'plate', 'plate', 'plate'], ex: [-170, 0, -70], d: 0.82 },
+    { n: 'Terminal box',           mats: ['blue', 'zinc', 'rubber', 'steel'], ex: [-170, 150, 0], d: 0.88 },
+    { n: 'Shaft seals',            mats: ['rubber', 'rubber', 'rubber', 'rubber'], ex: [0, 0, 150], d: 0.12 },
+    { n: 'Hollow output shaft',    mats: ['steel', 'steel', 'steel', 'steel'], ex: [0, 0, 300], d: 0.02 },
+    { n: 'Worm shaft',             mats: ['steel', 'steel', 'steel', 'steel'], ex: [230, 0, 0], d: 0.14 },
+    { n: 'Gearbox fan cover',      mats: ['char', 'zinc', 'rubber', 'steel'], ex: [440, 0, 0], d: 0.26 },
+  ];
+
+  /* ---------------- decode mesh ---------------- */
+  const bin = atob(MODEL.data);
+  const buf = new ArrayBuffer(bin.length);
+  { const u8 = new Uint8Array(buf); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); }
+  const E = MODEL.extent;
+  const parts = MODEL.parts.map((m, i) => {
+    const o = m.off;
+    const pos = new Int16Array(buf, o, m.nv * 4);
+    const nrm = new Int8Array(buf, o + m.nv * 8, m.nv * 4);
+    const idx = new Uint16Array(buf, o + m.nv * 12, m.nt * 3);
+    const cfg = P[i] || { n: m.name, mats: ['blue', 'zinc', 'rubber', 'steel'], ex: [0, 0, 0], d: 0 };
+    const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
+    const nb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, nb); gl.bufferData(gl.ARRAY_BUFFER, nrm, gl.STATIC_DRAW);
+    const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+    const base = new Float32Array(12), mp = new Float32Array(16);
+    cfg.mats.forEach((k, s) => {
+      const m4 = MAT[k]; const c = lin(m4.slice(0, 3));
+      base.set(c, s * 3); mp.set([m4[3], m4[4], m4[5], 0], s * 4);
+    });
+    return {
+      i, name: cfg.n, nt: m.nt, vb, nb, ib, base, mp,
+      ex: cfg.ex.map((v) => v / E), delay: cfg.d,
+      lo: m.lo, hi: m.hi, hi_t: 0,
+    };
+  });
+  /* the model is stored in the assembled pose; ground sits under the lowest point */
+  let minY = Infinity;
+  parts.forEach((p) => { minY = Math.min(minY, p.lo[1]); });
+  const groundY = minY - 0.004;
+
+  /* ---------------- shaders ---------------- */
+  const VS = `
+  attribute vec4 aPos; attribute vec4 aNrm;
+  uniform mat4 uVP; uniform vec3 uOff; uniform vec3 uBase[4]; uniform vec4 uMP[4]; uniform vec2 uPan;
+  varying vec3 vN; varying vec3 vW; varying vec3 vBase; varying vec4 vMP;
+  void main(){
+    vec3 p = aPos.xyz / 32767.0 + uOff;
+    vW = p; vN = aNrm.xyz / 127.0;
+    int m = int(aNrm.w + 0.5);
+    vec3 b = uBase[0]; vec4 q = uMP[0];
+    if (m == 1) { b = uBase[1]; q = uMP[1]; }
+    else if (m == 2) { b = uBase[2]; q = uMP[2]; }
+    else if (m == 3) { b = uBase[3]; q = uMP[3]; }
+    vBase = b; vMP = q;
+    vec4 c = uVP * vec4(p, 1.0);
+    c.xy += uPan * c.w;
+    gl_Position = c;
+  }`;
+  const FS = `
+  precision highp float;
+  varying vec3 vN; varying vec3 vW; varying vec3 vBase; varying vec4 vMP;
+  uniform vec3 uEye; uniform float uHi; uniform float uSweep; uniform float uSweepAmt;
+  uniform vec3 uBlue; uniform vec3 uBlueL; uniform vec3 uPurple; uniform vec3 uOrange;
+  const float PI = 3.14159265;
+  vec3 env(vec3 r, float rough){
+    float y = r.y;
+    vec3 sky = mix(vec3(0.80,0.85,0.93), vec3(1.05,1.05,1.08), smoothstep(0.0,1.0,y));
+    vec3 gnd = mix(vec3(0.50,0.50,0.54), vec3(0.74,0.75,0.79), smoothstep(-1.0,0.0,y));
+    vec3 c = mix(gnd, sky, smoothstep(-0.18,0.18,y));
+    float b1 = smoothstep(0.50,0.93, dot(r, normalize(vec3(-0.55,0.75,0.55))));
+    float b2 = smoothstep(0.66,0.97, dot(r, normalize(vec3(0.85,0.35,-0.30))));
+    float b3 = smoothstep(0.80,0.99, dot(r, normalize(vec3(0.0,0.30,1.0))));
+    c += vec3(1.25)*b1*(1.0-0.65*rough) + (uBlueL*0.9+0.2)*b2*(1.0-0.5*rough) + vec3(0.7)*b3*(1.0-0.7*rough);
+    c *= mix(vec3(1.0), vec3(0.97,0.94,1.03), 1.0 - abs(y));
+    return mix(c, vec3(0.72,0.74,0.80), rough*rough*0.55);
+  }
+  float D_ggx(float nh, float a){ float a2=a*a; float d = nh*nh*(a2-1.0)+1.0; return a2/(PI*d*d); }
+  vec3 shadeLight(vec3 N, vec3 V, vec3 L, vec3 col, vec3 F0, vec3 alb, float rough){
+    vec3 H = normalize(L+V);
+    float nl = max(dot(N,L),0.0), nh = max(dot(N,H),0.0), lh = max(dot(L,H),0.0);
+    vec3 F = F0 + (1.0-F0)*pow(1.0-lh,5.0);
+    float a = max(rough*rough, 0.045);
+    vec3 spec = D_ggx(nh,a) * F / (4.0*lh*lh + 1e-3) * 0.55;
+    return (alb*(1.0-F0) / PI + spec) * col * nl;
+  }
+  vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }
+  void main(){
+    vec3 N = normalize(vN);
+    vec3 V = normalize(uEye - vW);
+    if (!gl_FrontFacing) N = -N;
+    float metal = vMP.x, rough = vMP.y, coat = vMP.z;
+    vec3 alb = vBase * (1.0 - metal);
+    vec3 F0 = mix(vec3(0.04), vBase, metal);
+    float nv = max(dot(N,V),0.0);
+    /* lights */
+    vec3 Lk = normalize(vec3(-0.55,0.85,0.70));
+    vec3 Lf = normalize(vec3(0.90,0.25,0.35));
+    vec3 Lr = normalize(vec3(0.15,0.55,-0.95));
+    vec3 col = vec3(0.0);
+    col += shadeLight(N,V,Lk,vec3(3.4,3.3,3.2),F0,alb,rough);
+    col += shadeLight(N,V,Lf,uBlueL*1.5+0.25,F0,alb,rough);
+    col += shadeLight(N,V,Lr,uPurple*3.2+vec3(0.55,0.60,0.85),F0,alb,rough);
+    /* hemispheric ambient */
+    float up = N.y*0.5+0.5;
+    vec3 amb = mix(vec3(0.34,0.33,0.37), vec3(0.78,0.82,0.92), up);
+    col += alb * amb * 0.62;
+    /* environment reflection */
+    vec3 R = reflect(-V, N);
+    vec3 Fe = F0 + (max(vec3(1.0-rough),F0)-F0)*pow(1.0-nv,5.0);
+    col += env(R, rough) * Fe * mix(0.55, 1.0, metal);
+    /* clear-coat */
+    if (coat > 0.0) {
+      vec3 Fc = vec3(0.04) + 0.96*pow(1.0-nv,5.0);
+      col += env(R, 0.08) * Fc * coat * 1.15;
+      vec3 H = normalize(Lk+V); col += vec3(1.0) * pow(max(dot(N,H),0.0), 220.0) * 0.9 * coat;
+    }
+    /* soft cavity darkening toward the ground, brand rim */
+    col *= mix(0.80, 1.0, smoothstep(-0.5, 0.2, vW.y*2.2 + 0.35));
+    float rim = pow(1.0-nv, 3.0);
+    col += mix(uBlueL, uPurple*2.2, 0.35) * rim * 0.26;
+    /* assembly light sweep */
+    float s = exp(-pow((vW.x - uSweep) * 5.0, 2.0));
+    col += (uBlueL*1.1+0.15) * s * uSweepAmt * (0.22 + 0.5*rim);
+    /* hover highlight */
+    col = col * (1.0 + 0.22*uHi) + uBlueL * 0.05 * uHi;
+    col += uOrange * (0.10 + 1.1*rim) * uHi * 0.55;
+    col = aces(col*0.92);
+    col = pow(col, vec3(1.0/2.2));
+    gl_FragColor = vec4(col, 1.0);
+  }`;
+  const PICK_FS = `
+  precision mediump float;
+  uniform float uId;
+  void main(){ gl_FragColor = vec4(uId/255.0, 0.0, 0.0, 1.0); }`;
+  const GVS = `
+  attribute vec2 aQ; uniform mat4 uVP; uniform vec2 uPan; uniform float uY; uniform float uSize; varying vec2 vP;
+  void main(){ vec3 p = vec3(aQ.x*uSize, uY, aQ.y*uSize); vP = p.xz; vec4 c = uVP*vec4(p,1.0); c.xy += uPan*c.w; gl_Position = c; }`;
+  const GFS = `
+  precision mediump float;
+  varying vec2 vP; uniform vec2 uC; uniform vec2 uR; uniform float uA; uniform float uRing; uniform vec3 uBlue; uniform vec3 uOrange;
+  void main(){
+    vec2 q = (vP-uC)/uR; float d = length(q);
+    float sh = smoothstep(1.0,0.0,d); sh *= sh*sh;
+    float core = exp(-d*d*3.4);
+    float a = (0.12*sh + 0.22*core) * uA;
+    float ring = (smoothstep(0.010,0.0,abs(d*0.82-0.92)) * 0.55 + smoothstep(0.006,0.0,abs(d*0.82-1.10)) * 0.30) * uRing;
+    float fade = smoothstep(1.35,0.55,d);
+    vec3 rc = mix(uBlue, uOrange, 0.0);
+    vec3 col = vec3(0.05,0.06,0.10)*a + rc*ring*fade;
+    gl_FragColor = vec4(col, a + ring*fade);
+  }`;
+  function prog(vs, fs) {
+    const mk = (t, s) => { const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh); if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh)); return sh; };
+    const p = gl.createProgram(); gl.attachShader(p, mk(gl.VERTEX_SHADER, vs)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < n; i++) { const a = gl.getActiveUniform(p, i); u[a.name.replace('[0]', '')] = gl.getUniformLocation(p, a.name); }
+    return { p, u };
+  }
+  let main, pick, ground;
+  try { main = prog(VS, FS); pick = prog(VS, PICK_FS); ground = prog(GVS, GFS); } catch (e) { console.warn('Vectron hero shader error', e); fallback(); return; }
+  const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+
+  /* ---------------- matrices ---------------- */
+  const persp = (f, a, n, fa) => { const t = 1 / Math.tan(f / 2); return [t / a, 0, 0, 0, 0, t, 0, 0, 0, 0, (fa + n) / (n - fa), -1, 0, 0, 2 * fa * n / (n - fa), 0]; };
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const nrm3 = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const look = (e, t, up) => {
+    const z = nrm3(sub(e, t)), x = nrm3(cross(up, z)), y = cross(z, x);
+    return [x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot3(x, e), -dot3(y, e), -dot3(z, e), 1];
+  };
+  const mul = (a, b) => { const o = new Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; };
+
+  /* ---------------- state ---------------- */
+  const FOV = 0.46;                         // ~26°
+  const TARGET = [0.03, 0.02, 0]; // look-at (normalised model units)
+  let W = 0, H = 0, dpr = 1;
+  let dist = 4.2, pan = [0, 0];
+  let progress = reduce ? 1 : 0, target = progress;
+  let yawU = 0, pitchU = 0, vYaw = 0, vPitch = 0, dragging = false, lastInput = 0;
+  const ptr = { x: 0, y: 0, tx: 0, ty: 0 };
+  let last = performance.now(), raf = 0, visible = true, hoverIdx = -1, hoverWant = -1, pickAt = null, tipEl = null;
+  let pinTop = 0, pinTotal = 1, quality = 1, slow = 0, lastPick = 0;
+
+  /* camera orbit as a function of scroll progress: starts wider/higher, settles to the hero angle */
+  function camAngles(p, includeUser) {
+    const e = easeIO(p);
+    let yaw = mix(0.82, 0.50, e) + (includeUser ? yawU + ptr.x * 0.16 : 0);
+    let pitch = mix(0.40, 0.25, e) + (includeUser ? pitchU - ptr.y * 0.07 : 0);
+    if (includeUser && !reduce && p > 0.985 && !dragging) yaw += Math.sin(last * 0.00045) * 0.035;
+    return [yaw, clamp(pitch, -0.15, 1.15)];
+  }
+  function viewProj(p, includeUser, d = dist, pn = pan) {
+    const [yaw, pitch] = camAngles(p, includeUser);
+    const eye = [TARGET[0] + d * Math.cos(pitch) * Math.sin(yaw), TARGET[1] + d * Math.sin(pitch), TARGET[2] + d * Math.cos(pitch) * Math.cos(yaw)];
+    const v = look(eye, TARGET, [0, 1, 0]);
+    return { vp: mul(persp(FOV, W / H, 0.1, 40), v), eye };
+  }
+
+  /* per-part explode offset (normalised units) at progress p */
+  function offsetOf(part, p, out) {
+    const a = part.delay * 0.5, t = easeOut((p - a) / 0.5);
+    const k = 1 - t;
+    out[0] = part.ex[0] * k; out[1] = part.ex[1] * k; out[2] = part.ex[2] * k;
+  }
+
+  /* fit: for each stage of the assembly the visible parts are framed on their own, so the camera
+     slowly dollies in as the motor comes together (exploded state stays fully in view). */
+  const FIT_N = 12;
+  let fitTab = [];
+  function fitAt(pp) {
+    let d = 4.2, pn = [0, 0];
+    const tmp = [0, 0, 0];
+    for (let iter = 0; iter < 7; iter++) {
+      let x0 = 9, x1 = -9, y0 = 9, y1 = -9;
+      const { vp } = viewProj(pp, false, d);
+      for (const part of parts) {
+        offsetOf(part, pp, tmp);
+        for (let c = 0; c < 8; c++) {
+          const x = (c & 1 ? part.hi[0] : part.lo[0]) + tmp[0];
+          const y = (c & 2 ? part.hi[1] : part.lo[1]) + tmp[1];
+          const z = (c & 4 ? part.hi[2] : part.lo[2]) + tmp[2];
+          const cw = vp[3] * x + vp[7] * y + vp[11] * z + vp[15];
+          const nx = (vp[0] * x + vp[4] * y + vp[8] * z + vp[12]) / cw;
+          const ny = (vp[1] * x + vp[5] * y + vp[9] * z + vp[13]) / cw;
+          x0 = Math.min(x0, nx); x1 = Math.max(x1, nx); y0 = Math.min(y0, ny); y1 = Math.max(y1, ny);
+        }
+      }
+      const f = Math.max((x1 - x0) / 1.86, (y1 - y0) / 1.72);
+      pn = [-(x0 + x1) / 2, -(y0 + y1) / 2 - 0.015];
+      if (Math.abs(f - 1) < 0.003) break;
+      d *= f;
+    }
+    return { d, pn };
+  }
+  function fit() {
+    fitTab = [];
+    for (let i = 0; i <= FIT_N; i++) fitTab.push(fitAt(i / FIT_N));
+    applyFit(progress);
+  }
+  function applyFit(p) {
+    const f = clamp(p, 0, 1) * FIT_N, i = Math.min(FIT_N - 1, Math.floor(f)), t = f - i;
+    const A = fitTab[i], B = fitTab[i + 1];
+    dist = mix(A.d, B.d, t);
+    pan = [mix(A.pn[0], B.pn[0], t), mix(A.pn[1], B.pn[1], t)];
+  }
+
+  /* ---------------- sizing ---------------- */
+  let pickFB = null, pickTex = null, pickDepth = null, PW = 0, PH = 0;
+  function makePickTarget() {
+    PW = 192; PH = Math.max(64, Math.round(PW * H / W));
+    if (pickFB) { gl.deleteFramebuffer(pickFB); gl.deleteTexture(pickTex); gl.deleteRenderbuffer(pickDepth); }
+    pickTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, pickTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, PW, PH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    pickDepth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, pickDepth);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, PW, PH);
+    pickFB = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, pickFB);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, pickTex, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, pickDepth);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  function measurePin() {
+    pinTop = pin.getBoundingClientRect().top + window.scrollY;
+    pinTotal = Math.max(1, pin.offsetHeight - window.innerHeight);
+  }
   function resize() {
     const r = root.getBoundingClientRect();
-    dpr = Math.min(fitter ? 1.5 : 2, window.devicePixelRatio || 1);
+    const maxDpr = fine ? 2 : 1.75;
+    dpr = Math.min(maxDpr, window.devicePixelRatio || 1) * quality;
     W = Math.max(240, Math.floor(r.width));
     H = Math.max(200, Math.floor(r.height));
-    canvas.width = Math.floor(W * dpr);
-    canvas.height = Math.floor(H * dpr);
-    canvas.style.width = `${W}px`;
-    canvas.style.height = `${H}px`;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    calibrate();
-    draw();
+    canvas.width = Math.floor(W * dpr); canvas.height = Math.floor(H * dpr);
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    measurePin();
+    fit();
+    makePickTarget();
+    draw(0);
   }
 
-  /* Isometric projection with a quiet pointer-driven camera drift */
-  function iso(x, y, z) {
-    const s = S();
-    return {
-      x: originX + (x - z) * s * 0.866 + pointer.x * W * 0.015,
-      y: originY + y * s * 0.56 + (x + z) * s * 0.5 + pointer.y * H * 0.018,
-      d: x + z + y * 0.32,
-    };
+  /* ---------------- drawing ---------------- */
+  const off = [0, 0, 0];
+  function bindMain(prog_, withMat) {
+    const a = gl.getAttribLocation(prog_.p, 'aPos'), b = gl.getAttribLocation(prog_.p, 'aNrm');
+    return [a, b];
   }
-
-  const shade = (hex, k) => {
-    const n = parseInt(hex.slice(1), 16);
-    const r = Math.min(255, Math.round(((n >> 16) & 255) * k));
-    const g = Math.min(255, Math.round(((n >> 8) & 255) * k));
-    const b = Math.min(255, Math.round((n & 255) * k));
-    return `rgb(${r},${g},${b})`;
-  };
-  const rgba = (hex, a) => {
-    const n = parseInt(hex.slice(1), 16);
-    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
-  };
-
-  const poly = (pts, close = true) => {
-    if (pts.length < 2) return;
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-    if (close) ctx.closePath();
-  };
-  const fill = (pts, c) => { poly(pts); ctx.fillStyle = c; ctx.fill(); };
-  const stroke = (pts, c = 'rgba(18,21,26,.24)', w = 1) => { poly(pts); ctx.strokeStyle = c; ctx.lineWidth = w; ctx.stroke(); };
-  function strokePts(pts, c, w) { poly(pts, false); ctx.strokeStyle = c; ctx.lineWidth = w; ctx.stroke(); }
-  const strokeArc = (p, r, c, w = 1) => {
-    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.strokeStyle = c; ctx.lineWidth = w; ctx.stroke();
-  };
-  const fillArc = (p, r, c) => {
-    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = c; ctx.fill();
-  };
-
-  /* Face with a soft directional gradient (key light upper-left). */
-  const spaint = (pts, col) => {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    pts.forEach((p) => {
-      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
-      x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
-    });
-    const g = ctx.createLinearGradient(x0, y0, x1, y1);
-    g.addColorStop(0, shade(col, 1.18));
-    g.addColorStop(0.5, col);
-    g.addColorStop(1, shade(col, 0.7));
-    poly(pts); ctx.fillStyle = g; ctx.fill();
-  };
-
-  /* Soft ambient / contact shadow ellipse on a surface below a part. */
-  function ao(p, rx, ry, k, col = '#1a1f24') {
-    if (k <= 0.003) return;
-    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, Math.max(rx, ry));
-    g.addColorStop(0, rgba(col, k));
-    g.addColorStop(1, rgba(col, 0));
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  /* ---------- primitives ---------- */
-  /* Horizontal cylinder (axis along x) with machined end caps. */
-  function cylH(cx, cy, cz, len, r, col, o, opt = {}) {
-    const steps = opt.steps || stepsOf();
-    const ox = o.x, oy = o.y, oz = o.z;
-    for (let i = 0; i < steps; i++) {
-      const a0 = (i / steps) * Math.PI * 2, a1 = ((i + 1) / steps) * Math.PI * 2;
-      const am = (a0 + a1) / 2;
-      const y0 = Math.cos(a0) * r, z0 = Math.sin(a0) * r;
-      const y1 = Math.cos(a1) * r, z1 = Math.sin(a1) * r;
-      const p0 = iso(cx + ox, cy + y0 + oy, cz + z0 + oz);
-      const p1 = iso(cx + len + ox, cy + y0 + oy, cz + z0 + oz);
-      const p3 = iso(cx + ox, cy + y1 + oy, cz + z1 + oz);
-      const p2 = iso(cx + len + ox, cy + y1 + oy, cz + z1 + oz);
-      const front = Math.max(0, -Math.sin(am));   // −z faces the viewer
-      const top = Math.max(0, -Math.cos(am));     // −y faces up
-      const lit = 0.42 + front * 0.34 + top * 0.52;
-      fill([p0, p1, p2, p3], shade(col, clamp(lit, 0.4, 1.32)));
-      stroke([p0, p1, p2, p3], 'rgba(20,24,30,.08)', 0.55);
-    }
-    /* end caps — radial "machined" gradient biased to the key light */
-    [[cx, true], [cx + len, false]].forEach(([ex, fCap]) => {
-      const c0 = iso(ex + ox, cy + oy, cz + oz);
-      const rr = r * S();
-      const g = ctx.createRadialGradient(c0.x + rr * 0.18, c0.y - rr * 0.22, rr * 0.12, c0.x, c0.y, rr * 1.02);
-      const base = fCap ? shade(col, 1.06) : shade(col, 0.86);
-      g.addColorStop(0, shade(col, 1.28));
-      g.addColorStop(0.45, base);
-      g.addColorStop(1, shade(col, 0.58));
-      const pts = [];
-      for (let i = 0; i <= 30; i++) {
-        const a = (i / 30) * Math.PI * 2;
-        pts.push(iso(ex + ox, cy + Math.cos(a) * r + oy, cz + Math.sin(a) * r + oz));
+  function drawParts(pr, vp, pickMode) {
+    gl.useProgram(pr.p);
+    gl.uniformMatrix4fv(pr.u.uVP, false, vp);
+    gl.uniform2fv(pr.u.uPan, pan);
+    const aP = gl.getAttribLocation(pr.p, 'aPos'), aN = gl.getAttribLocation(pr.p, 'aNrm');
+    gl.enableVertexAttribArray(aP); gl.enableVertexAttribArray(aN);
+    for (const part of parts) {
+      offsetOf(part, progress, off);
+      gl.uniform3fv(pr.u.uOff, off);
+      if (pickMode) gl.uniform1f(pr.u.uId, part.i + 1);
+      else {
+        gl.uniform3fv(pr.u.uBase, part.base); gl.uniform4fv(pr.u.uMP, part.mp);
+        gl.uniform1f(pr.u.uHi, part.hi_t);
       }
-      fill(pts, g);
-      stroke(pts, 'rgba(20,24,30,.15)', 0.8);
-      ctx.save();
-      ctx.globalAlpha = 0.5;
-      strokeArc(c0, rr * 0.86, 'rgba(255,255,255,.5)', 0.9);
-      ctx.restore();
-    });
-    /* polished specular streak along the top-front */
-    if (opt.gloss && !reduce) {
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255,255,255,.30)';
-      ctx.lineWidth = 1.3;
-      ctx.shadowColor = 'rgba(255,255,255,.65)';
-      ctx.shadowBlur = 6;
-      for (let i = 0; i < 2; i++) {
-        const a = -0.22 + i * 0.26;
-        ctx.beginPath();
-        let first = true;
-        for (let k = 0; k <= 20; k++) {
-          const x = cx + 0.06 + (k / 20) * (len - 0.12);
-          const p = iso(x + ox, cy + Math.cos(a) * (r + 0.01) + oy, cz + Math.sin(a) * (r + 0.01) + oz);
-          if (first) { ctx.moveTo(p.x, p.y); first = false; } else ctx.lineTo(p.x, p.y);
-        }
-        ctx.stroke();
-      }
-      ctx.restore();
+      gl.bindBuffer(gl.ARRAY_BUFFER, part.vb); gl.vertexAttribPointer(aP, 4, gl.SHORT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, part.nb); gl.vertexAttribPointer(aN, 4, gl.BYTE, false, 0, 0);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, part.ib);
+      gl.drawElements(gl.TRIANGLES, part.nt * 3, gl.UNSIGNED_SHORT, 0);
     }
   }
-
-  /* Vertical cylinder (axis along y) for glands, breathers, small studs. */
-  function cylV(cx, y0, y1, cz, r, col, o, opt = {}) {
-    const steps = opt.steps || 12;
-    const ox = o.x, oy = o.y, oz = o.z;
-    const a = (i) => (i / steps) * Math.PI * 2;
-    for (let i = 0; i < steps; i++) {
-      const x0m = Math.cos(a(i)) * r, z0m = Math.sin(a(i)) * r;
-      const x1m = Math.cos(a(i + 1)) * r, z1m = Math.sin(a(i + 1)) * r;
-      const am = (a(i) + a(i + 1)) / 2;
-      const p0 = iso(cx + x0m + ox, y0 + oy, cz + z0m + oz);
-      const p1 = iso(cx + x1m + ox, y0 + oy, cz + z1m + oz);
-      const p2 = iso(cx + x1m + ox, y1 + oy, cz + z1m + oz);
-      const p3 = iso(cx + x0m + ox, y1 + oy, cz + z0m + oz);
-      const front = Math.max(0, -Math.sin(am));
-      const left = Math.max(0, -Math.cos(am));
-      const lit = 0.5 + front * 0.32 + left * 0.14;
-      fill([p0, p1, p2, p3], shade(col, clamp(lit, 0.42, 1.28)));
+  /* shadow ellipse follows the spread of the parts */
+  function groundParams() {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const part of parts) {
+      offsetOf(part, progress, off);
+      if (part.ex[1] > 0.05) continue;     // parts that lift off do not widen the footprint
+      x0 = Math.min(x0, part.lo[0] + off[0]); x1 = Math.max(x1, part.hi[0] + off[0]);
+      z0 = Math.min(z0, part.lo[2] + off[2]); z1 = Math.max(z1, part.hi[2] + off[2]);
     }
-    /* top cap */
-    const c0 = iso(cx + ox, y0 + oy, cz + oz);
-    const rr = r * S() * 1.02;
-    const g = ctx.createRadialGradient(c0.x - rr * 0.15, c0.y - rr * 0.2, rr * 0.1, c0.x, c0.y, rr);
-    g.addColorStop(0, shade(col, 1.25));
-    g.addColorStop(1, shade(col, 0.75));
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.ellipse(c0.x, c0.y, rr, rr * 0.56, 0, 0, Math.PI * 2);
-    ctx.fill();
-    strokeArc(c0, rr, 'rgba(20,24,30,.18)', 0.7);
+    const k = mix(0.62, 0.50, progress);
+    return [(x0 + x1) / 2, (z0 + z1) / 2, Math.max(0.3, (x1 - x0) * k), Math.max(0.28, (z1 - z0) * k * 1.15)];
+  }
+  function draw(t) {
+    applyFit(progress);
+    const { vp, eye } = viewProj(progress, true);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
+    gl.disable(gl.CULL_FACE);
+    /* ground shadow + ring */
+    for (let i = 0; i < 4; i++) gl.disableVertexAttribArray(i);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+    gl.useProgram(ground.p);
+    gl.uniformMatrix4fv(ground.u.uVP, false, vp); gl.uniform2fv(ground.u.uPan, pan);
+    const g = groundParams();
+    gl.uniform1f(ground.u.uY, groundY); gl.uniform1f(ground.u.uSize, 4);
+    gl.uniform2f(ground.u.uC, g[0], g[1]); gl.uniform2f(ground.u.uR, g[2], g[3]);
+    gl.uniform1f(ground.u.uA, mix(0.55, 1.0, progress));
+    gl.uniform1f(ground.u.uRing, mix(0.16, 0.5, easeIO(progress)));
+    gl.uniform3fv(ground.u.uBlue, C.blueL); gl.uniform3fv(ground.u.uOrange, C.orange);
+    const aQ = gl.getAttribLocation(ground.p, 'aQ');
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.enableVertexAttribArray(aQ); gl.vertexAttribPointer(aQ, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.disableVertexAttribArray(aQ);
+    gl.depthMask(true); gl.disable(gl.BLEND);
+    /* model */
+    gl.useProgram(main.p);
+    gl.uniform3fv(main.u.uEye, eye);
+    gl.uniform3fv(main.u.uBlue, C.blue); gl.uniform3fv(main.u.uBlueL, C.blueL);
+    gl.uniform3fv(main.u.uPurple, C.purple); gl.uniform3fv(main.u.uOrange, C.orange);
+    const sweep = mix(-1.1, 1.3, progress);
+    gl.uniform1f(main.u.uSweep, sweep);
+    gl.uniform1f(main.u.uSweepAmt, progress > 0.02 && progress < 0.985 ? 1 : 0);
+    drawParts(main, vp, false);
+  }
+  function pickDraw(px, py) {
+    applyFit(progress);
+    const { vp } = viewProj(progress, true);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, pickFB);
+    gl.viewport(0, 0, PW, PH);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
+    drawParts(pick, vp, true);
+    const x = clamp(Math.floor(px * PW), 0, PW - 1), y = clamp(Math.floor((1 - py) * PH), 0, PH - 1);
+    const o = new Uint8Array(4); gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, o);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return o[0] ? o[0] - 1 : -1;
   }
 
-  /* Box with per-face light response: up bright → bottom dark. corners:
-     0:(x,y,z) 1:(x+w,y,z) 2:(x+w,y+h,z) 3:(x,y+h,z)
-     4:(x,y,z+d) 5:(x+w,y,z+d) 6:(x+w,y+h,z+d) 7:(x,y+h,z+d) */
-  function box3(x, y, z, w, h, d, col, o, opt = {}) {
-    const c = [
-      [x, y, z], [x + w, y, z], [x + w, y + h, z], [x, y + h, z],
-      [x, y, z + d], [x + w, y, z + d], [x + w, y + h, z + d], [x, y + h, z + d],
-    ].map(([px, py, pz]) => iso(px + o.x, py + o.y, pz + o.z));
-    const lit = { up: 1.16, front: 0.94, side: 0.8, back: 0.64, bottom: 0.5 };
-    const faces = [
-      { i: [0, 1, 5, 4], k: lit.up },
-      { i: [3, 2, 6, 7], k: lit.bottom },
-      { i: [0, 1, 2, 3], k: lit.front },
-      { i: [4, 5, 6, 7], k: lit.back },
-      { i: [0, 3, 7, 4], k: lit.side },
-      { i: [1, 2, 6, 5], k: lit.side },
-    ].map((f) => ({ pts: f.i.map((k) => c[k]), d: f.i.reduce((s, k) => s + c[k].d, 0) / 4, k: f.k }));
-    faces.sort((a, b) => a.d - b.d);
-    faces.forEach((f) => {
-      spaint(f.pts, shade(col, f.k));
-      stroke(f.pts, 'rgba(20,24,30,.09)', 0.7);
-    });
-  }
-
-  /* ---------- small parts ---------- */
-  function bolt(x, y, z, o, r = 0.05) {
-    const p = iso(x + o.x, y + o.y, z + o.z);
-    fillArc(p, r * S(), M.steelD);
-    strokeArc(p, r * S(), 'rgba(20,24,30,.3)', 0.6);
-    ctx.beginPath();
-    ctx.moveTo(p.x - r * S() * 0.5, p.y);
-    ctx.lineTo(p.x + r * S() * 0.5, p.y);
-    ctx.strokeStyle = 'rgba(0,0,0,.3)';
-    ctx.lineWidth = 0.6;
-    ctx.stroke();
-  }
-  function keyway(x0, x1, y, z, o, k = 0.8) {
-    ctx.save();
-    ctx.globalAlpha = k;
-    const p0 = iso(x0 + o.x, y + o.y, z + o.z);
-    const p1 = iso(x1 + o.x, y + o.y, z + o.z);
-    ctx.strokeStyle = C.blueD;
-    ctx.lineWidth = 1.4;
-    ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
-    ctx.restore();
-  }
-  function ribLine(x, y0, y1, z, o, col = 'rgba(23,24,31,.35)') {
-    const p0 = iso(x + o.x, y0 + o.y, z + o.z);
-    const p1 = iso(x + o.x, y1 + o.y, z + o.z);
-    strokePts([p0, p1], col, 1);
-  }
-
-  /* ---------- baseplate ---------- */
-  function drawGround() {
-    const p = iso(0, 3.06, 0);
-    const g = ctx.createRadialGradient(p.x, p.y, 6, p.x, p.y, Math.max(W, H) * 0.30);
-    g.addColorStop(0, 'rgba(23,24,31,.10)');
-    g.addColorStop(0.55, 'rgba(23,24,31,.05)');
-    g.addColorStop(1, 'rgba(23,24,31,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.ellipse(p.x, p.y, W * 0.30, H * 0.10, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  function boxTopFace(x, y, z, w, d, o) {
-    return [iso(x + o.x, y + o.y, z + o.z), iso(x + w + o.x, y + o.y, z + o.z),
-            iso(x + w + o.x, y + o.y, z + d + o.z), iso(x + o.x, y + o.y, z + d + o.z)];
-  }
-
-  function drawBaseplate() {
-    box3(-4.6, plateTop, -1.05, 8.4, 0.40, 2.10, '#c9ccc6', { x: 0, y: 0, z: 0 });
-    const tp = boxTopFace(-4.6, plateTop, -1.05, 8.4, 2.10, { x: 0, y: 0, z: 0 });
-    spaint(tp, '#e2e4dd');
-    stroke(tp, 'rgba(20,24,30,.16)', 0.8);
-    for (const z of [-0.6, 0, 0.6]) {
-      const a = iso(-4.5, plateTop + 0.005, z);
-      const b = iso(3.7, plateTop + 0.005, z);
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = 'rgba(23,24,31,.28)';
-      ctx.lineWidth = 1.1;
-      ctx.stroke();
-    }
-  }
-
-  /* Contact shadows that fade in as parts seat onto the plate. */
-  function partAO(p, t) {
-    const a = clamp((t - 0.55) / 0.45, 0, 1) * 0.16;
-    if (p.id === 'motor') {
-      ao(iso(-2.12, plateTop + 0.01, -0.30), 1.6 * S(), 0.24 * S(), a);
-      ao(iso(-2.12, plateTop + 0.01, 0.30), 1.6 * S(), 0.24 * S(), a);
-    } else if (p.id === 'casing') {
-      ao(iso(1.75, plateTop + 0.01, -0.62), 1.1 * S(), 0.22 * S(), a);
-      ao(iso(1.75, plateTop + 0.01, 0.62), 1.1 * S(), 0.22 * S(), a);
-    }
-  }
-
-  /* ---------- parts ---------- */
-  function drawFan(o) {
-    const ox = o.x, oy = o.y, oz = o.z;
-    cylH(-3.80, yM, 0, 0.36, 0.64, M.steel, o, { steps: 24 });
-    /* rear end shield */
-    cylH(-4.00, yM, 0, 0.10, 0.28, M.alum, o, { steps: 18 });
-    /* louvre ring */
-    const r0 = iso(-3.60 + ox, yM + oy, oz);
-    strokeArc(r0, 0.60 * S(), 'rgba(23,24,31,.4)', 1.2);
-    for (let i = 0; i < 8; i++) {
-      const a = (i / 8) * Math.PI * 2;
-      const p0 = iso(-3.61 + ox, yM + Math.cos(a) * 0.42 + oy, Math.sin(a) * 0.42 + oz);
-      const p1 = iso(-3.61 + ox, yM + Math.cos(a) * 0.60 + oy, Math.sin(a) * 0.60 + oz);
-      strokePts([p0, p1], 'rgba(23,24,31,.38)', 1.1);
-    }
-    /* fan disc behind the grille */
-    const fc = iso(-3.44 + ox, yM + oy, oz);
-    const fr = 0.46 * S();
-    const g = ctx.createRadialGradient(fc.x - fr * 0.2, fc.y - fr * 0.2, fr * 0.1, fc.x, fc.y, fr);
-    g.addColorStop(0, shade(M.alum, 1.2)); g.addColorStop(1, shade(M.alum, 0.8));
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(fc.x, fc.y, fr, 0, Math.PI * 2); ctx.fill();
-    strokeArc(fc, fr, 'rgba(23,24,31,.3)', 1);
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      ctx.beginPath();
-      ctx.moveTo(fc.x, fc.y);
-      ctx.lineTo(fc.x + Math.cos(a) * fr * 0.92, fc.y + Math.sin(a) * fr * 0.92);
-      ctx.strokeStyle = 'rgba(23,24,31,.32)';
-      ctx.lineWidth = 1.3;
-      ctx.stroke();
-    }
-  }
-
-  function drawMotor(o, t) {
-    const ox = o.x, oy = o.y, oz = o.z;
-    const k = 1 - ease(t);            // term lifts / slides with the motor
-    const tox = ox, toy = oy - 0.90 * k, toz = oz;
-
-    /* main stator housing with cooling fins */
-    cylH(-3.45, yM, 0, 2.65, 0.60, M.paint, o, { steps: 26 });
-    /* cast fin ridges painted over the blue body */
-    for (let i = 0; i < 7; i++) {
-      const x = -3.30 + (i / 6) * 2.40;
-      const a = iso(x + ox, yM - 0.585 + oy, -0.42 + oz);
-      const b = iso(x + ox, yM - 0.585 + oy, 0.42 + oz);
-      strokePts([a, b], 'rgba(23,24,31,.22)', 0.9);
-    }
-    for (let i = 0; i < 9; i++) {
-      const x = -3.32 + (i / 8) * 2.40;
-      const f0 = iso(x + ox, yM - 0.60 + oy, oz);
-      const f1 = iso(x + ox, yM + 0.60 + oy, oz);
-      strokePts([f0, f1], 'rgba(255,255,255,.14)', 1.1);
-    }
-    /* nameplate */
-    box3(-2.42, 1.24, -0.652, 0.84, 0.34, 0.05, M.alum, o);
-    const nx = iso(-2.00 + ox, 1.41 + oy, -0.63 + oz);
-    ctx.save();
-    ctx.fillStyle = 'rgba(23,24,31,.8)';
-    ctx.font = `700 ${Math.max(6, Math.min(8, W * 0.013))}px Manrope, system-ui, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText('VECTRON', nx.x, nx.y + 1);
-    ctx.restore();
-    ctx.textAlign = 'left';
-    /* feet + hold-down bolts */
-    box3(-3.15, 2.30, -0.62, 2.05, 0.32, 0.52, M.paintD, o);
-    box3(-3.15, 2.30, 0.10, 2.05, 0.32, 0.52, M.paintD, o);
-    for (const z of [-0.36, 0.36]) {
-      for (const x of [-2.9, -1.4]) bolt(x, 2.30, z, o, 0.045);
-    }
-
-    /* --- terminal box (lifts during explosion, stays on the motor) --- */
-    box3(-2.74, 0.99, -0.34, 0.92, 0.10, 0.68, M.paintD, o);            // pedestal
-    box3(-2.66, 1.09, -0.34, 0.76, 0.48, 0.68, M.paint, { x: tox, y: toy, z: toz });
-    box3(-2.74, 1.01, -0.42, 0.92, 0.10, 0.84, M.paintD, { x: tox, y: toy, z: toz }); // lid
-    [[-2.6, -0.33], [-2.6, 0.33], [-1.98, -0.33], [-1.98, 0.33]].forEach(([x, z]) => bolt(x, 1.03, z, { x: tox, y: toy, z: toz }, 0.045));
-    cylV(-2.28, 0.90, 1.04, 0, 0.10, M.steelL, { x: tox, y: toy, z: toz });   // gland
-    cylV(-2.28, 0.98, 1.10, 0, 0.15, M.steel, { x: tox, y: toy, z: toz });    // gland nut
-  }
-
-  function drawRotor(o) {
-    const ox = o.x, oy = o.y, oz = o.z;
-    /* rotor core — exposed while separated, seats inside the housing */
-    cylH(-3.05, yM, 0, 2.30, 0.40, M.iron, o, { steps: 22 });
-    /* rear fan-mount disc */
-    cylH(-3.48, yM, 0, 0.06, 0.34, M.alum, o, { steps: 18 });
-    /* drive-end shield + boss */
-    cylH(-0.78, yM, 0, 0.18, 0.58, M.alum, o, { steps: 24 });
-    cylH(-0.60, yM, 0, 0.22, 0.26, M.alum, o, { steps: 18 });
-    /* bolt circle on the shield face */
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      bolt(-0.68, yM + Math.cos(a) * 0.44, Math.sin(a) * 0.44, o, 0.035);
-    }
-    /* bearing web lines */
-    for (let i = 0; i < 4; i++) {
-      const a = -0.7 + i * 0.55;
-      const p0 = iso(-0.62 + ox, yM + Math.cos(a) * 0.30 + oy, Math.sin(a) * 0.30 + oz);
-      const p1 = iso(-0.62 + ox, yM + Math.cos(a) * 0.50 + oy, Math.sin(a) * 0.50 + oz);
-      strokePts([p0, p1], 'rgba(23,24,31,.28)', 0.8);
-    }
-    /* keyed output shaft — polished */
-    cylH(-0.62, yM, 0, 0.76, 0.16, M.chrome, o, { steps: 18, gloss: true });
-    cylH(0.14, yM, 0, 0.12, 0.11, M.steel, o, { steps: 14 });
-    keyway(0.02, 0.12, yM + 0.045, 0, o);
-  }
-
-  function drawCoupler(o) {
-    const ox = o.x, oy = o.y, oz = o.z;
-    /* hub 1 — rides the motor shaft end */
-    cylH(0.02, yM, 0, 0.20, 0.30, M.steel, o, { steps: 20 });
-    cylH(0.02, yM, 0, 0.06, 0.34, M.steelL, o, { steps: 20 });
-    /* flexible element */
-    cylH(0.22, yM, 0, 0.14, 0.28, M.spider, o, { steps: 18, gloss: true });
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const p0 = iso(0.24 + ox, yM + Math.cos(a) * 0.20 + oy, Math.sin(a) * 0.20 + oz);
-      const p1 = iso(0.34 + ox, yM + Math.cos(a) * 0.20 + oy, Math.sin(a) * 0.20 + oz);
-      strokePts([p0, p1], 'rgba(23,24,31,.18)', 1);
-    }
-    /* hub 2 — gearbox input */
-    cylH(0.36, yM, 0, 0.20, 0.30, M.steel, o, { steps: 20 });
-    cylH(0.52, yM, 0, 0.06, 0.34, M.steelL, o, { steps: 20 });
-    const bc = iso(0.40 + ox, yM + oy, oz);
-    strokeArc(bc, 0.10 * S(), 'rgba(23,24,31,.5)', 1);
-  }
-
-  function drawCasing(o, t) {
-    const ox = o.x, oy = o.y, oz = o.z;
-    const k = 1 - ease(t);            // cover lifts / slides with the housing
-    const cox = ox, coy = oy - 0.85 * k, coz = oz;
-
-    /* input bell */
-    box3(0.54, 1.30, -0.56, 0.14, 0.74, 1.12, M.ironL, o);
-    /* main housing */
-    box3(0.68, 1.00, -0.92, 2.17, 1.55, 1.84, M.iron, o);
-    /* cast ribs on the housing */
-    for (const z of [-0.92, 0.92]) {
-      for (let i = 0; i < 4; i++) {
-        const x = 1.0 + i * 0.44;
-        const p0 = iso(x + ox, 1.06 + oy, z * 0.999 + oz);
-        const p1 = iso(x + ox, 2.42 + oy, z * 0.999 + oz);
-        strokePts([p0, p1], 'rgba(255,255,255,.10)', 0.9);
-      }
-    }
-    /* inspection hatch on the front face */
-    box3(1.35, 1.30, -0.965, 0.50, 0.42, 0.06, M.ironL, o);
-    [[1.44, 1.38], [1.44, 1.64], [1.76, 1.38], [1.76, 1.64]].forEach(([x, y]) => bolt(x, y, -0.94, o, 0.035));
-    /* drain plug */
-    const dp = iso(1.45 + ox, 2.53 + oy, 0.4 + oz);
-    fillArc(dp, 0.10 * S(), M.ironD);
-    strokeArc(dp, 0.10 * S(), 'rgba(20,24,30,.5)', 0.9);
-    /* feet + hold-down bolts */
-    box3(0.80, 2.55, -0.92, 1.85, 0.07, 0.55, M.ironD, o);
-    box3(0.80, 2.55, 0.37, 1.85, 0.07, 0.55, M.ironD, o);
-    for (const z of [-0.6, 0.6]) {
-      for (const x of [1.1, 2.35]) bolt(x, 2.55, z, o, 0.042);
-    }
-    /* output flange + bolts */
-    cylH(2.82, yOut, 0, 0.10, 0.52, M.steel, o, { steps: 22 });
-    cylH(2.92, yOut, 0, 0.04, 0.46, M.steelL, o, { steps: 22 });
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      bolt(2.88, yOut + Math.cos(a) * 0.38, Math.sin(a) * 0.38, o, 0.04);
-    }
-    /* stepped keyed output shaft — polished */
-    cylH(2.86, yOut, 0, 0.42, 0.26, M.chrome, o, { steps: 18, gloss: true });
-    cylH(3.28, yOut, 0, 0.32, 0.17, M.chrome, o, { steps: 16, gloss: true });
-    keyway(3.32, 3.48, yOut + 0.05, 0, o);
-    strokeArc(iso(3.60 + ox, yOut + oy, oz), 0.16 * S(), 'rgba(23,24,31,.3)', 0.9);
-
-    /* --- gearbox top cover (lifts during explosion, stays on the housing) --- */
-    box3(0.54, 0.86, -0.92, 2.31, 0.14, 1.84, M.ironL, { x: cox, y: coy, z: coz });
-    for (const z of [-0.92, 0.92]) {
-      for (let i = 0; i < 5; i++) {
-        const x = 0.85 + i * 0.42;
-        const p0 = iso(x + cox, 0.87 + coy, z * 0.998 + coz);
-        const p1 = iso(x + cox, 0.97 + coy, z * 0.998 + coz);
-        strokePts([p0, p1], 'rgba(23,24,31,.22)', 0.8);
-      }
-    }
-    [[0.7, -0.8], [0.7, 0.8], [2.6, -0.8], [2.6, 0.8]].forEach(([x, z]) => bolt(x, 0.90, z, { x: cox, y: coy, z: coz }, 0.042));
-    /* breather on the cover */
-    cylV(2.30, 0.74, 0.86, 0.30, 0.08, M.steelL, { x: cox, y: coy, z: coz });
-  }
-
-  function drawPart(p, o, t) {
-    if (p.id === 'fan') drawFan(o);
-    else if (p.id === 'motor') drawMotor(o, t);
-    else if (p.id === 'rotor') drawRotor(o);
-    else if (p.id === 'coupler') drawCoupler(o);
-    else if (p.id === 'casing') drawCasing(o, t);
-  }
-
-  const partOffset = (p, t) => {
-    const k = 1 - ease(t);
-    return { x: p.ex * k, y: p.ey * k, z: p.ez * k };
-  };
-
-  /* ---------- callouts (exploded phase only) ---------- */
-  function drawCallouts(t) {
-    if (t > 0.32 || W < 540) return;
-    const alpha = ((0.32 - t) / 0.32) * 0.88;
-    ctx.save();
-    ctx.globalAlpha = clamp(alpha, 0, 1);
-    ctx.fillStyle = C.blueD;
-    ctx.font = `${W < 720 ? '500' : '600'} ${Math.max(9, Math.min(11, W * 0.018))}px Manrope, system-ui, sans-serif`;
-    const pts = [
-      { at: () => iso(-3.55 - 1.55, yM - 1.0, 0), text: 'FAN COWL' },
-      { at: () => iso(-2.12 - 1.10, yM - 1.55, 0), text: 'MOTOR' },
-      { at: () => iso(-0.45 + 0.95, yM + 1.05, 0.1), text: 'ROTOR & SHAFT' },
-      { at: () => iso(0.30 + 0.95, yM + 1.05, 0.1), text: 'FLEXIBLE COUPLING' },
-      { at: () => iso(1.70 + 0.95, yM - 1.6, 0), text: 'GEARBOX' },
-      { at: () => iso(1.70 + 0.95, yOut + 1.05, 0.2), text: 'OUTPUT FLANGE' },
-    ];
-    pts.forEach((c) => {
-      const pt = c.at();
-      const txtW = ctx.measureText(c.text).width;
-      const lx = clamp(pt.x + 14, 6, W - txtW - 6);
-      const ly = pt.y - 6;
-      ctx.beginPath();
-      ctx.moveTo(pt.x, pt.y);
-      ctx.lineTo(lx - 3, ly);
-      ctx.lineTo(lx, ly);
-      ctx.strokeStyle = 'rgba(23,24,31,.5)';
-      ctx.lineWidth = 0.9;
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 1.5, 0, Math.PI * 2);
-      ctx.fillStyle = C.orange;
-      ctx.fill();
-      ctx.fillText(c.text, lx, ly - 3);
-    });
-    ctx.restore();
-  }
-
-  /* soft light band that sweeps the unit once as the parts seat */
-  function drawSweep(t) {
-    if (reduce || t <= 0.02 || t >= 0.99) return;
-    const x = iso(-3.2 + 6.9 * clamp(t, 0, 1), 1.8, 0).x;
-    const a = (0.10 + Math.sin(time * 0.0012) * 0.03).toFixed(3);
-    const g = ctx.createLinearGradient(x - 110, 0, x + 110, H);
-    g.addColorStop(0, 'rgba(255,255,255,0)');
-    g.addColorStop(0.5, `rgba(255,255,255,${a})`);
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(x - 110, 0, 220, H);
-  }
-
-  /* ---------- render ---------- */
-  function render(t, mode) {
-    ctx.clearRect(0, 0, W, H);
-    if (mode !== 'scan') drawGround();
-    const order = [...parts].sort((a, b) => {
-      const oa = partOffset(a, t), ob = partOffset(b, t);
-      return (a.cx + a.cz + oa.x - oa.z + a.cy * 0.32) - (b.cx + b.cz + ob.x - ob.z + b.cy * 0.32);
-    });
-    if (mode !== 'scan') drawBaseplate();
-    order.forEach((p) => partAO(p, t));
-    order.forEach((p) => drawPart(p, partOffset(p, t), t));
-    if (mode === 'full') {
-      drawCallouts(t);
-      drawSweep(t);
-    }
-  }
-
-  /* ---------- auto-calibration: keep the machine large & centred ---------- */
-  let off = null, offCtx = null;
-  /* measure() renders one assembly state on an oversized offscreen canvas with
-     the origin shifted so nothing sits at negative coordinates (where it would
-     be clipped and mis-measured). The shift is subtracted afterwards. */
-  function measure(t) {
-    if (!off) { off = document.createElement('canvas'); offCtx = off.getContext('2d', { willReadFrequently: true }); }
-    const B = Math.ceil(14 * S() + 80);           // headroom around the projected spread
-    off.width = Math.max(2, W + 2 * B);
-    off.height = Math.max(2, H + 2 * B);
-    const savedCtx = ctx;
-    const savedOX = originX, savedOY = originY;
-    ctx = offCtx;
-    originX = B; originY = B;
-    let r = null;
-    try {
-      render(t, 'scan');
-      const d = offCtx.getImageData(0, 0, off.width, off.height).data;
-      let minX = off.width, minY = off.height, maxX = -1, maxY = -1, n = 0;
-      for (let y = 0; y < off.height; y++) {
-        for (let x = 0; x < off.width; x++) {
-          if (d[(y * off.width + x) * 4 + 3] > 10) {
-            n++;
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (y < minY) minY = y;
-            if (y > maxY) maxY = y;
-          }
-        }
-      }
-      if (n > 0) r = { minX: minX - B, maxX: maxX - B, minY: minY - B, maxY: maxY - B, w: maxX - minX + 1, h: maxY - minY + 1 };
-    } finally {
-      originX = savedOX; originY = savedOY;
-      ctx = savedCtx;
-    }
-    return r;
-  }
-
-  function calibrate() {
-    Sbase = Math.min(Math.min(W, H) * 0.105, W / 7.0, H / 5.4);
-    originX = 0; originY = 0;
-    const savedPx = pointer.x, savedPy = pointer.y;
-    pointer.x = 0; pointer.y = 0;
-    /* The scroll animates monotonically between the exploded state (t=0) and
-       the assembled state (t=1), so fitting the union envelope of both keeps
-       every intermediate frame inside the viewport. */
-    for (let i = 0; i < 4; i++) {
-      const ac = measure(1), ec = measure(0);
-      if (!ac || !ec) break;
-      const uw = Math.max(ac.maxX, ec.maxX) - Math.min(ac.minX, ec.minX) + 1;
-      const uh = Math.max(ac.maxY, ec.maxY) - Math.min(ac.minY, ec.minY) + 1;
-      const f = Math.min((0.90 * W) / uw, (0.86 * H) / uh, 1.15);
-      if (f > 1.001 || f < 0.999) { Sbase *= f; continue; }
-      break;
-    }
-    /* centre the assembled unit, then nudge so the exploded envelope also
-       stays fully inside the canvas (it spreads asymmetrically to the left) */
-    const ac = measure(1), ec = measure(0);
-    if (ac && ec) {
-      originX = W / 2 - (ac.minX + ac.maxX) / 2;
-      originY = H / 2 - (ac.minY + ac.maxY) / 2;
-      const eL = ec.minX + originX, eR = ec.maxX + originX;
-      const eT = ec.minY + originY, eB = ec.maxY + originY;
-      const dL = 6 - eL, dR = eR - (W - 6), dT = 6 - eT, dB = eB - (H - 6);
-      if (dL > 0 && dR <= 0) originX += dL;
-      else if (dR > 0 && dL <= 0) originX -= dR;
-      if (dT > 0 && dB <= 0) originY += dT;
-      else if (dB > 0 && dT <= 0) originY -= dB;
-    } else if (ac) {
-      originX = W / 2 - (ac.minX + ac.maxX) / 2;
-      originY = H / 2 - (ac.minY + ac.maxY) / 2;
-    }
-    /* safety: if either state still splits the canvas edges, shrink once more */
-    const a2 = measure(1), e2 = measure(0);
-    if (a2 && e2) {
-      const l = Math.min(a2.minX, e2.minX) + originX, r = Math.max(a2.maxX, e2.maxX) + originX;
-      const t = Math.min(a2.minY, e2.minY) + originY, b = Math.max(a2.maxY, e2.maxY) + originY;
-      const over = Math.max((6 - l) / (r - l + 1), (r - (W - 6)) / (r - l + 1),
-                            (6 - t) / (b - t + 1), (b - (H - 6)) / (b - t + 1), 0);
-      if (over > 0.001) {
-        Sbase *= (1 - over);
-        const ac3 = measure(1), ec3 = measure(0);
-        if (ac3 && ec3) {
-          originX = W / 2 - (Math.min(ac3.minX, ec3.minX) + Math.max(ac3.maxX, ec3.maxX)) / 2;
-          originY = H / 2 - (Math.min(ac3.minY, ec3.minY) + Math.max(ac3.maxY, ec3.maxY)) / 2;
-        }
-      }
-    }
-    pointer.x = savedPx; pointer.y = savedPy;
-  }
-
-  function draw() {
-    render(progress, 'full');
-    if (bar) bar.style.transform = `scaleX(${progress.toFixed(4)})`;
-    if (label) {
-      label.textContent = progress < 0.85
-        ? progress < 0.12 ? 'Exploded view' : 'Assembling mechanism'
-        : '';
-    }
-    if (hero) hero.style.setProperty('--assemble', progress.toFixed(4));
-  }
-
+  /* ---------------- scroll → progress ---------------- */
   function readScroll() {
     if (reduce) { target = 1; return; }
-    const total = pin.offsetHeight - window.innerHeight;
-    if (total < 80) return;
-    const r = pin.getBoundingClientRect();
-    const scrolled = clamp(-r.top, 0, total);
-    target = scrolled / total;
+    if (autoRunning) return;
+    if (autoDone && isNarrow()) { target = 1; return; }      // phones: assemble once, then hold
+    const y = window.scrollY;
+    target = clamp((y - pinTop) / pinTotal, 0, 1);
   }
-
-  function tick(now) {
-    const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
-    last = now;
-    time = now;
-    readScroll();
-    progress += (target - progress) * (reduce ? 1 : 0.12);
-    if (Math.abs(target - progress) < 0.001) progress = target;
-    draw();
-    raf = requestAnimationFrame(tick);
-  }
-
-  const fine = matchMedia('(hover: hover) and (pointer: fine)').matches && !reduce;
-  if (fine) {
-    root.addEventListener('pointermove', (e) => {
-      const r = root.getBoundingClientRect();
-      pointer.tx = clamp((e.clientX - r.left) / r.width - 0.5, -1, 1);
-      pointer.ty = clamp((e.clientY - r.top) / r.height - 0.5, -1, 1);
-    });
-    root.addEventListener('pointerleave', () => { pointer.tx = 0; pointer.ty = 0; });
-  }
-  function lerpPointer() {
-    pointer.x += (pointer.tx - pointer.x) * 0.08;
-    pointer.y += (pointer.ty - pointer.y) * 0.08;
-    requestAnimationFrame(lerpPointer);
-  }
-
-  /* mobile: auto-assemble once in view, then hold */
-  const isNarrow = () => window.matchMedia('(max-width:899px)').matches;
-  let autoDone = false;
+  const isNarrow = () => matchMedia('(max-width:899px)').matches;
+  let autoDone = false, autoRunning = false;
   function maybeAuto() {
     if (!isNarrow() || reduce || autoDone) return;
     const r = pin.getBoundingClientRect();
-    if (r.top < window.innerHeight * 0.7 && r.bottom > 0) {
-      autoDone = true;
-      const start = performance.now();
-      const from = progress;
+    if (r.top < innerHeight * 0.7 && r.bottom > 0) {
+      autoDone = true; autoRunning = true;
+      const t0 = performance.now(), from = target;
       const run = (now) => {
-        const u = Math.min(1, (now - start) / 2400);
-        target = from + (1 - from) * ease(u);
-        if (u < 1) requestAnimationFrame(run);
+        const u = Math.min(1, (now - t0) / 2600);
+        target = from + (1 - from) * easeIO(u);
+        if (u < 1) requestAnimationFrame(run); else { autoRunning = false; target = 1; }
       };
       requestAnimationFrame(run);
     }
   }
 
+  /* ---------------- HUD ---------------- */
+  let lastLabel = '', lastBar = -1;
+  function hud() {
+    if (bar && Math.abs(progress - lastBar) > 0.0005) { lastBar = progress; bar.style.transform = 'scaleX(' + progress.toFixed(4) + ')'; }
+    if (hero && Math.abs(progress - (hud.p || -1)) > 0.0005) { hud.p = progress; hero.style.setProperty('--assemble', progress.toFixed(4)); }
+    if (label) {
+      const s = progress < 0.04 ? 'Exploded view' : progress < 0.985 ? 'Assembling geared motor' : (fine ? 'Assembled · drag to rotate' : 'Assembled');
+      if (s !== lastLabel) { lastLabel = s; label.textContent = s; }
+    }
+  }
+
+  /* ---------------- main loop ---------------- */
+  function tick(now) {
+    const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
+    last = now;
+    readScroll();
+    const k = window.__vectronSmooth ? 15 : 9;       // global smooth-scroll already eases; keep this light
+    progress += (target - progress) * (reduce ? 1 : 1 - Math.exp(-dt * k));
+    if (Math.abs(target - progress) < 0.0004) progress = target;
+    if (fine) { const a = 1 - Math.exp(-dt * 5); ptr.x += (ptr.tx - ptr.x) * a; ptr.y += (ptr.ty - ptr.y) * a; }
+    /* inertia + slow return of the user's orbit */
+    if (!dragging) {
+      yawU += vYaw * dt; pitchU += vPitch * dt;
+      const damp = Math.exp(-dt * 3.2); vYaw *= damp; vPitch *= damp;
+      if (now - lastInput > 3500) { const r = 1 - Math.exp(-dt * 0.9); yawU -= yawU * r; pitchU -= pitchU * r; }
+    }
+    pitchU = clamp(pitchU, -0.5, 0.7);
+    for (const p of parts) p.hi_t += ((p.i === hoverIdx ? 1 : 0) - p.hi_t) * (1 - Math.exp(-dt * 12));
+    if (pickAt && !dragging && now - lastPick > 70) {
+      lastPick = now;
+      const idx = pickDraw(pickAt.x, pickAt.y); pickAt = null;
+      if (idx !== hoverIdx) { hoverIdx = idx; canvas.style.cursor = idx >= 0 ? 'pointer' : 'grab'; showTip(); }
+    }
+    draw(now);
+    hud();
+    /* adaptive resolution */
+    if (dt > 0.034) slow++; else slow = Math.max(0, slow - 1);
+    if (slow > 40 && quality > 0.6) { quality = Math.max(0.6, quality - 0.15); slow = 0; resize(); }
+    raf = visible ? requestAnimationFrame(tick) : 0;
+  }
+
+  /* ---------------- interaction ---------------- */
+  function showTip() {
+    if (!tipEl) { tipEl = document.createElement('div'); tipEl.className = 'hero__tip'; tipEl.setAttribute('aria-hidden', 'true'); root.appendChild(tipEl); }
+    if (hoverIdx < 0) { tipEl.classList.remove('is-on'); return; }
+    tipEl.textContent = parts[hoverIdx].name;
+    tipEl.classList.add('is-on');
+    moveTip();
+  }
+  let tipXY = [0, 0];
+  function moveTip() { if (tipEl) tipEl.style.transform = 'translate(' + (tipXY[0] + 14) + 'px,' + (tipXY[1] + 16) + 'px)'; }
+  let dragX = 0, dragY = 0, moved = 0;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    dragging = true; moved = 0; dragX = e.clientX; dragY = e.clientY; vYaw = vPitch = 0; lastInput = performance.now();
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+    canvas.style.cursor = 'grabbing';
+    hoverIdx = -1; showTip();
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    const r = canvas.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+    if (fine) { ptr.tx = clamp(px - 0.5, -0.5, 0.5) * 2; ptr.ty = clamp(py - 0.5, -0.5, 0.5) * 2; }
+    tipXY = [e.clientX - r.left, e.clientY - r.top]; moveTip();
+    if (dragging) {
+      const dx = e.clientX - dragX, dy = e.clientY - dragY; dragX = e.clientX; dragY = e.clientY;
+      moved += Math.abs(dx) + Math.abs(dy);
+      const s = 0.0075;
+      yawU -= dx * s; pitchU += dy * s * 0.8;
+      const now = performance.now(); const dtm = Math.max(8, now - lastInput) / 1000; lastInput = now;
+      vYaw = clamp(-dx * s / dtm, -4, 4); vPitch = clamp(dy * s * 0.8 / dtm, -3, 3);
+    } else if (e.pointerType === 'mouse') {
+      pickAt = { x: px, y: py };
+    }
+  });
+  const endDrag = (e) => { if (!dragging) return; dragging = false; canvas.style.cursor = 'grab'; try { canvas.releasePointerCapture(e.pointerId); } catch (_) {} };
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+  canvas.addEventListener('pointerleave', () => { ptr.tx = ptr.ty = 0; hoverIdx = -1; showTip(); });
+  canvas.addEventListener('dblclick', () => { yawU = pitchU = vYaw = vPitch = 0; });
+  canvas.addEventListener('keydown', (e) => {
+    const s = 0.12;
+    if (e.key === 'ArrowLeft') yawU += s; else if (e.key === 'ArrowRight') yawU -= s;
+    else if (e.key === 'ArrowUp') pitchU -= s * 0.7; else if (e.key === 'ArrowDown') pitchU += s * 0.7;
+    else if (e.key === 'Home' || e.key === 'Escape') yawU = pitchU = 0; else return;
+    lastInput = performance.now(); e.preventDefault();
+  });
+  canvas.setAttribute('tabindex', '0');
+  canvas.setAttribute('aria-label', 'Interactive 3D geared motor. Scroll to assemble. Drag or use arrow keys to rotate.');
+  canvas.style.cursor = fine ? 'grab' : 'default';
+  canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); cancelAnimationFrame(raf); raf = 0; }, false);
+  canvas.addEventListener('webglcontextrestored', () => location.reload(), false);
+
+  /* ---------------- boot ---------------- */
   resize();
-  addEventListener('resize', resize, { passive: true });
+  let rt = 0;
+  addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(resize, 120); }, { passive: true });
+  addEventListener('load', () => { measurePin(); }, { passive: true });
+  if ('ResizeObserver' in window) new ResizeObserver(() => measurePin()).observe(document.body);
   addEventListener('scroll', maybeAuto, { passive: true });
   root.classList.add('is-ready');
+  if ('IntersectionObserver' in window) {
+    new IntersectionObserver((es) => {
+      const was = visible; visible = es[0].isIntersecting;
+      if (visible && !was && !raf) { last = performance.now(); raf = requestAnimationFrame(tick); }
+    }, { rootMargin: '160px' }).observe(root);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { cancelAnimationFrame(raf); raf = 0; }
+    else if (visible && !raf) { last = performance.now(); raf = requestAnimationFrame(tick); }
+  });
   raf = requestAnimationFrame(tick);
-  if (fine) requestAnimationFrame(lerpPointer);
   maybeAuto();
+  /* test hook */
+  window.__vectronHero = { set: (p) => { progress = target = p; }, state: () => ({ progress, target, dist, pan }) };
 })();

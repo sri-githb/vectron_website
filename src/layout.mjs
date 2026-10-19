@@ -1,4 +1,4 @@
-import { SITE, CATEGORIES, NAV, ASSETS, BRAND, wa } from './data.mjs';
+import { SITE, CATEGORIES, NAV, ASSETS, BRAND, BRANDS, wa, PAGE_KEYWORDS, MOTOR_FAMILIES, VFD_FAMILIES, GEAR_FAMILIES, PUMP } from './data.mjs';
 
 export const arrow = `<svg class="arrow" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/></svg>`;
 
@@ -8,26 +8,117 @@ export { waIcon };
 const logoImg = (root, cls = '') =>
   `<img class="${cls}" src="${root}${ASSETS.logo}" alt="${ASSETS.logoAlt}" width="${ASSETS.logoW}" height="${ASSETS.logoH}" fetchpriority="high">`;
 
-export function head({ title, description, root, path, image = ASSETS.og }) {
+const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+/* breadcrumb trail from a page path, e.g. products/motors/ -> Home > Products > Motors */
+function crumbsFor(path) {
+  if (!path) return [];
+  const parts = path.split('/').filter(Boolean);
+  const names = { products: 'Products', brands: 'Brands', services: 'Services', about: 'About', contact: 'Contact' };
+  const out = [];
+  let acc = '';
+  parts.forEach((seg, i) => {
+    acc += seg + '/';
+    const cat = i === 1 ? CATEGORIES.find((c) => c.slug === seg) : null;
+    out.push({ name: cat ? cat.name : names[seg] || seg, path: acc });
+  });
+  return out;
+}
+
+const FAMILY_NAMES = {
+  motors: () => MOTOR_FAMILIES.map((f) => f.name),
+  vfds: () => VFD_FAMILIES.flatMap((f) => f.range),
+  gearboxes: () => GEAR_FAMILIES,
+  pumps: () => [...PUMP.solutions, 'APP pumps', 'iSave energy recovery'],
+};
+
+function schemaGraph({ base, url, path, full, description, og }) {
+  const ORG = `${base}/#organization`, WEB = `${base}/#website`;
+  const graph = [
+    {
+      '@type': ['Organization', 'LocalBusiness'], '@id': ORG, name: 'Vectron',
+      alternateName: ['Vectron Chennai', 'Vectron Precision Engineering Products'],
+      url: `${base}/`, slogan: SITE.tagline,
+      description: 'Industrial electric motors, variable frequency drives, gearboxes and geared motors, and high-pressure pumps in Chennai, with servicing and lifecycle engineering support.',
+      logo: { '@type': 'ImageObject', url: `${base}/${ASSETS.logo}`, width: ASSETS.logoW, height: ASSETS.logoH },
+      image: og, telephone: '+91-98847-71672', email: SITE.email,
+      address: { '@type': 'PostalAddress', streetAddress: 'No. 1/169A, Sri Krishna Garden, Tharapakkam', addressLocality: 'Chennai', addressRegion: 'Tamil Nadu', postalCode: '600128', addressCountry: 'IN' },
+      areaServed: { '@type': 'City', name: 'Chennai' },
+      contactPoint: [{ '@type': 'ContactPoint', contactType: 'sales', telephone: '+91-98847-71672', email: SITE.email }],
+      knowsAbout: ['Industrial electric motors', 'IE2, IE3 and IE4 motors', 'Brake motors', 'Crane duty motors', 'Smoke venting motors', 'Variable frequency drives', 'Danfoss VLT and VACON drives', 'Soft starters', 'Industrial gearboxes', 'Geared motors', 'Planetary gearboxes', 'Worm gearboxes', 'High-pressure pumps', 'Reverse osmosis pumps', 'Danfoss APP pumps', 'iSave energy recovery', 'Lifecycle engineering support'],
+      keywords: 'industrial motors Chennai, VFD Chennai, gearbox Chennai, high-pressure pumps Chennai, IE2 IE3 IE4 motors, Danfoss VFD, geared motors, RO pumps, motor servicing',
+      hasOfferCatalog: { '@type': 'OfferCatalog', name: 'Vectron product categories', itemListElement: CATEGORIES.map((c) => ({ '@type': 'OfferCatalog', name: c.name, url: `${base}/products/${c.slug}/` })) },
+    },
+    { '@type': 'WebSite', '@id': WEB, url: `${base}/`, name: 'Vectron', alternateName: ['Vectron Chennai', 'Vectron Motors'], inLanguage: 'en-IN', publisher: { '@id': ORG } },
+  ];
+  const first = path.split('/')[0];
+  const type = path === '' ? 'WebPage' : path === 'products/' || path.split('/').filter(Boolean).length === 2 ? 'CollectionPage' : first === 'about' ? 'AboutPage' : first === 'contact' ? 'ContactPage' : 'WebPage';
+  const crumbs = crumbsFor(path);
+  graph.push({
+    '@type': type, '@id': `${url}#webpage`, url, name: full, description, inLanguage: 'en-IN',
+    isPartOf: { '@id': WEB }, about: { '@id': ORG }, primaryImageOfPage: { '@type': 'ImageObject', url: og },
+    ...(crumbs.length ? { breadcrumb: { '@id': `${url}#breadcrumb` } } : {}),
+  });
+  if (crumbs.length) {
+    graph.push({
+      '@type': 'BreadcrumbList', '@id': `${url}#breadcrumb`,
+      itemListElement: [{ name: 'Home', path: '' }, ...crumbs].map((c, i) => ({ '@type': 'ListItem', position: i + 1, name: c.name, item: `${base}/${c.path}` })),
+    });
+  }
+  if (path === 'products/') {
+    graph.push({ '@type': 'ItemList', name: 'Vectron product categories', itemListElement: CATEGORIES.map((c, i) => ({ '@type': 'ListItem', position: i + 1, name: c.name, url: `${base}/products/${c.slug}/` })) });
+  }
+  const cat = CATEGORIES.find((c) => path === `products/${c.slug}/`);
+  if (cat) {
+    graph.push({ '@type': 'ItemList', name: `${cat.name}: product families`, itemListElement: FAMILY_NAMES[cat.slug]().map((n, i) => ({ '@type': 'ListItem', position: i + 1, name: n })) });
+  }
+  if (path === 'services/') {
+    graph.push({ '@type': 'Service', name: 'Servicing and lifecycle engineering support', serviceType: 'Motor, gearbox, variable frequency drive and pump servicing', provider: { '@id': ORG }, areaServed: { '@type': 'City', name: 'Chennai' }, description });
+  }
+  if (path === 'brands/') {
+    graph.push({ '@type': 'ItemList', name: 'Brands Vectron deals with', itemListElement: BRANDS.map((b, i) => ({ '@type': 'ListItem', position: i + 1, name: b.name })) });
+  }
+  return { '@context': 'https://schema.org', '@graph': graph };
+}
+
+export function head({ title, description, root, path, image = ASSETS.og, noindex = false }) {
   const full = title.includes('Vectron') ? title : `${title} | Vectron`;
-  const url = SITE.siteUrl ? SITE.siteUrl.replace(/\/$/, '') + '/' + path : '';
-  const og = SITE.siteUrl ? SITE.siteUrl.replace(/\/$/, '') + '/' + image : root + image;
+  const base = SITE.siteUrl.replace(/\/$/, '');
+  const url = `${base}/${path}`;
+  const og = `${base}/${image}`;
+  const kw = (PAGE_KEYWORDS[path] || []).join(', ');
+  const ld = JSON.stringify(schemaGraph({ base, url, path, full, description, og }));
   return `<!doctype html>
-<html lang="en">
+<html lang="en-IN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${full}</title>
-<meta name="description" content="${description}">
+<title>${esc(full)}</title>
+<meta name="description" content="${esc(description)}">
+${kw ? `<meta name="keywords" content="${esc(kw)}">\n` : ''}<meta name="robots" content="${noindex ? 'noindex,follow' : 'index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1'}">
+<meta name="author" content="Vectron">
 <meta name="theme-color" content="${BRAND.paper}">
-<script>document.documentElement.classList.add('js')</script>
-${url ? `<link rel="canonical" href="${url}">\n<meta property="og:url" content="${url}">` : ''}
+<meta name="geo.region" content="IN-TN">
+<meta name="geo.placename" content="Chennai">
+<meta name="format-detection" content="telephone=yes">
+${SITE.googleVerification ? `<meta name="google-site-verification" content="${SITE.googleVerification}">\n` : ''}${SITE.bingVerification ? `<meta name="msvalidate.01" content="${SITE.bingVerification}">\n` : ''}<script>document.documentElement.classList.add('js')</script>
+<link rel="canonical" href="${url}">
+<link rel="alternate" hreflang="en-IN" href="${url}">
+<link rel="alternate" hreflang="x-default" href="${url}">
 <meta property="og:type" content="website">
+<meta property="og:locale" content="en_IN">
 <meta property="og:site_name" content="Vectron">
-<meta property="og:title" content="${full}">
-<meta property="og:description" content="${description}">
+<meta property="og:url" content="${url}">
+<meta property="og:title" content="${esc(full)}">
+<meta property="og:description" content="${esc(description)}">
 <meta property="og:image" content="${og}">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="840">
+<meta property="og:image:alt" content="Vectron: industrial motors, drives, gearboxes and pumps, Chennai">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${esc(full)}">
+<meta name="twitter:description" content="${esc(description)}">
+<meta name="twitter:image" content="${og}">
 <link rel="icon" href="${root}${ASSETS.faviconIco}" sizes="32x32">
 <link rel="icon" href="${root}${ASSETS.favicon}" type="image/png" sizes="512x512">
 <link rel="apple-touch-icon" href="${root}${ASSETS.appleTouch}">
@@ -35,18 +126,13 @@ ${url ? `<link rel="canonical" href="${url}">\n<meta property="og:url" content="
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300..800&display=swap">
 <link rel="stylesheet" href="${root}assets/styles.css">
-<script type="application/ld+json">${JSON.stringify({
-    '@context': 'https://schema.org', '@type': 'Organization', name: 'Vectron',
-    slogan: SITE.tagline, telephone: SITE.phoneRaw, email: SITE.email,
-    address: { '@type': 'PostalAddress', streetAddress: 'No. 1/169A, Sri Krishna Garden, Tharapakkam', addressLocality: 'Chennai', postalCode: '600128', addressCountry: 'IN' },
-  })}</script>
+<script type="application/ld+json">${ld}</script>
 </head>`;
 }
 
 export function header(root, current) {
   const mega = CATEGORIES.map(
     (c) => `<a class="mega__item" href="${root}products/${c.slug}/">
-      <span class="mega__n">${c.n} / 04</span>
       <span class="mega__img"><img src="${root}assets/img/${c.img}" alt="" loading="lazy" decoding="async"></span>
       <span class="mega__t">${c.name}</span>
       <span class="mega__d">${c.blurb}</span>
@@ -61,7 +147,7 @@ export function header(root, current) {
     return `<li class="nav__item"><a class="nav__link" href="${root}${n.href}"${cur}>${n.label}<span class="nav__dot" aria-hidden="true"></span></a></li>`;
   }).join('');
   const mobileProducts = CATEGORIES.map(
-    (c) => `<a href="${root}products/${c.slug}/"><span>${c.n}</span>${c.name}</a>`
+    (c) => `<a href="${root}products/${c.slug}/">${c.name}</a>`
   ).join('');
   const mobileLinks = NAV.filter((n) => !n.mega).map((n) => `<a class="mm__big" href="${root}${n.href}">${n.label}</a>`).join('');
   return `<a class="skip" href="#main">Skip to content</a>
@@ -89,12 +175,12 @@ export function header(root, current) {
 </div>`;
 }
 
-export function footer(root) {
+export function footer(root, extra = '') {
   return `<footer class="footer">
   <div class="wrap footer__grid">
     <div class="footer__brand">
       <a class="footer__logo" href="${root}" aria-label="Vectron — home">${logoImg(root)}</a>
-      <p>${SITE.tagline}. Electro-mechanical solutions and lifecycle engineering support: motors, drives, gearboxes and high-pressure pumps.</p>
+      <p>${SITE.tagline}.<br>Electro-mechanical solutions and lifecycle engineering support.</p>
     </div>
     <nav aria-label="Footer"><p class="label">Explore</p>
       <ul>${NAV.map((n) => `<li><a href="${root}${n.href}">${n.label}</a></li>`).join('')}<li><a href="${root}contact/">Contact</a></li></ul></nav>
@@ -108,21 +194,22 @@ export function footer(root) {
         <li><address>${SITE.address.join('<br>')}</address></li>
       </ul></div>
   </div>
-  <div class="wrap footer__legal"><span>© 2026 Vectron. All rights reserved.</span><span>Brand names and logos belong to their respective owners.</span></div>
+  <div class="wrap footer__legal"><span>© 2026 Vectron. All rights reserved.</span><span>Brand names and logos belong to their respective owners.</span>${extra ? `<span>${extra}</span>` : ''}</div>
 </footer>
 <a class="wa-float" href="${wa('Hi Vectron, I would like to know more about your products.')}" target="_blank" rel="noopener" aria-label="Chat with Vectron on WhatsApp" data-wa>${waIcon}<span>WhatsApp</span></a>
-<div class="cursor" aria-hidden="true" data-cursor></div>`;
+<div class="cursor" aria-hidden="true" data-cursor><img src="${root}assets/img/cursor.svg" alt="" width="28" height="34" aria-hidden="true"></div>`;
 }
 
-export function page({ title, description, path, root, current, body, bodyClass = '', scripts = [] }) {
+export function page({ title, description, path, root, current, body, bodyClass = '', scripts = [], footExtra = '', noindex = false }) {
   const extra = scripts.map((s) => `<script src="${root}${s}" defer></script>`).join('\n');
-  return `${head({ title, description, root, path })}
+  return `${head({ title, description, root, path, noindex })}
 <body class="${bodyClass}" data-root="${root}">
 ${header(root, current)}
 <main id="main">
 ${body}
 </main>
-${footer(root)}
+${footer(root, footExtra)}
+<script src="${root}assets/smooth.js" defer></script>
 <script src="${root}assets/main.js" defer></script>
 ${extra}
 </body>
@@ -130,23 +217,9 @@ ${extra}
 `;
 }
 
-export const sectionHead = ({ n, label, title, lead = '', cls = '' }) => `
+export const sectionHead = ({ label, title, lead = '', cls = '' }) => `
 <div class="shead ${cls}">
-  <p class="label"><span class="dot"></span>${n ? n + ' — ' : ''}${label}</p>
+  <p class="label"><span class="dot"></span>${label}</p>
   <h2 class="h2 reveal">${title}</h2>
   ${lead ? `<p class="lead reveal">${lead}</p>` : ''}
 </div>`;
-
-export const enquiryCta = ({ root, topic, heading = 'Talk to an engineer.', sub = 'Tell us what you need. We will come back with the right product and details.' }) => `
-<section class="cta dark">
-  <div class="wrap cta__in">
-    <p class="label"><span class="dot"></span>Enquire</p>
-    <h2 class="display-md reveal">${heading}</h2>
-    <p class="lead reveal">${sub}</p>
-    <div class="cta__btns">
-      <a class="btn btn--accent btn--lg" data-magnetic href="${wa(`Hi Vectron, I would like to know more about ${topic}.`)}" target="_blank" rel="noopener">${waIcon} Enquire on WhatsApp</a>
-      <a class="btn btn--ghost btn--lg" data-magnetic href="${root}contact/?product=${encodeURIComponent(topic)}">Request product details</a>
-      <a class="btn btn--text" href="tel:${SITE.phoneRaw}">Call ${SITE.phone}</a>
-    </div>
-  </div>
-</section>`;

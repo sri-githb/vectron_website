@@ -1,2 +1,5 @@
 User-agent: *
 Allow: /
+Disallow: /applications/
+
+Sitemap: https://www.vectron.co.in/sitemap.xml

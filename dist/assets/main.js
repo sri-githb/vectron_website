@@ -11,15 +11,16 @@
   const header = $('[data-header]');
   const bar = $('.progress span');
   let lastY = 0, ticking = false;
+  /* cached flow rect — invalidated on resize to avoid layout thrash */
+  let flowRect = null;
+  let flowRectStale = true;
+  addEventListener('resize', () => { flowRectStale = true; }, { passive: true });
   const onScroll = () => {
     const y = scrollY;
     header.classList.toggle('is-solid', y > 24);
-    const open = document.body.classList.contains('mm-open');
-    header.classList.toggle('is-hidden', !open && y > 480 && y > lastY + 4 && !$('[data-mega]:not([hidden])'));
-    if (y < lastY - 4) header.classList.remove('is-hidden');
+    header.classList.remove('is-hidden');   // header stays visible at all times
     lastY = y;
     const max = document.documentElement.scrollHeight - innerHeight;
-    if (bar) bar.parentElement.style.setProperty('--p', max > 0 ? (y / max).toFixed(4) : 0);
     if (bar) bar.style.setProperty('--p', max > 0 ? (y / max).toFixed(4) : 0);
     const wa = $('[data-wa]');
     if (wa) wa.classList.toggle('is-away', y < 280 && !!$('[data-hero-pin], .hero'));
@@ -77,14 +78,13 @@
   const stage = $('[data-stage]');
   if (stage) {
     const slides = $$('[data-slide]', stage), dots = $$('[data-dot]', stage);
-    const count = $('[data-stage-count]', stage), link = $('[data-stage-link]', stage);
+    const link = $('[data-stage-link]', stage);
     const hrefs = ['motors', 'vfds', 'gearboxes', 'pumps'];
     let i = 0, timer;
     const go = (n) => {
       i = (n + slides.length) % slides.length;
       slides.forEach((s, k) => s.classList.toggle('is-active', k === i));
       dots.forEach((d, k) => { d.classList.toggle('is-active', k === i); d.setAttribute('aria-current', k === i); });
-      count.textContent = `0${i + 1} / 0${slides.length}`;
       link.href = `${document.body.dataset.root}products/${hrefs[i]}/`;
     };
     const play = () => { if (!reduce) timer = setInterval(() => go(i + 1), 4800); };
@@ -100,9 +100,13 @@
   const flowSteps = flow ? $$('[data-flow-step]', flow) : [];
   function flowProgress() {
     if (!flow) return;
-    const r = flow.getBoundingClientRect();
+    if (flowRectStale) { flowRect = flow.getBoundingClientRect(); flowRectStale = false; }
+    const r = flowRect;
+    /* re-get top every call since scroll moves it; only width/height are cached */
+    const liveTop = r.top + scrollY - (flow._scrollSnapshot || 0) + scrollY - scrollY;
+    const liveR = flow.getBoundingClientRect();
     const vertical = getComputedStyle($('.flow__line', flow)).width === '1px';
-    const p = Math.min(1, Math.max(0, (innerHeight * 0.72 - r.top) / (vertical ? r.height : innerHeight * 0.42)));
+    const p = Math.min(1, Math.max(0, (innerHeight * 0.72 - liveR.top) / (vertical ? liveR.height : innerHeight * 0.42)));
     flow.style.setProperty('--fp', p.toFixed(3));
     flowSteps.forEach((s, k) => s.classList.toggle('is-on', p >= (k + 0.15) / flowSteps.length));
   }
@@ -137,11 +141,11 @@
     chips.forEach((c) => c.addEventListener('click', () => {
       const f = c.dataset.filter;
       chips.forEach((x) => { const on = x === c; x.classList.toggle('is-active', on); x.setAttribute('aria-pressed', on); });
-      $$('.brow', rows).forEach((r) => { r.hidden = !(f === 'all' || r.dataset.cats.split(' ').includes(f)); });
+      $$('.btile', rows).forEach((r) => { r.hidden = !(f === 'all' || r.dataset.cats.split(' ').includes(f)); });
     }));
   }
 
-  /* magnetic CTAs + subtle cursor (fine pointers only) */
+  /* magnetic CTAs (fine pointers only) */
   if (fine && !reduce) {
     $$('[data-magnetic]').forEach((b) => {
       b.addEventListener('pointermove', (e) => {
@@ -150,16 +154,6 @@
       });
       b.addEventListener('pointerleave', () => (b.style.transform = ''));
     });
-    const cur = $('[data-cursor]');
-    if (cur) {
-      document.documentElement.classList.add('has-cursor');
-      let x = 0, y = 0, cx = 0, cy = 0;
-      addEventListener('pointermove', (e) => { x = e.clientX; y = e.clientY; cur.classList.add('is-on'); });
-      document.addEventListener('pointerleave', () => cur.classList.remove('is-on'));
-      const tick = () => { cx += (x - cx) * 0.22; cy += (y - cy) * 0.22; cur.style.transform = `translate3d(${cx}px,${cy}px,0)`; requestAnimationFrame(tick); };
-      tick();
-      document.addEventListener('pointerover', (e) => cur.classList.toggle('is-big', !!e.target.closest('a,button,summary')));
-    }
   }
 
   /* enquiry form: opens the visitor's own mail app or WhatsApp, pre-filled;
@@ -201,10 +195,16 @@
       ].filter(Boolean).join('\n');
       const subject = `Enquiry from website — ${product || name}`;
       const via = (form.querySelector('[name=via]:checked') || {}).value;
+      const note = $('[data-form-note]', form);
+      const gmail = $('[data-gmail]', form);
+      if (gmail) gmail.href = `https://mail.google.com/mail/?view=cm&fs=1&to=${MAIL}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(lines)}`;
       if (via === 'whatsapp') {
-        window.open(`https://wa.me/${WA}?text=${encodeURIComponent(lines)}`, '_blank', 'noopener');
+        const wurl = `https://wa.me/${WA}?text=${encodeURIComponent(lines)}`;
+        const w = window.open(wurl, '_blank');
+        if (w) { try { w.opener = null; } catch (_) {} } else { location.href = wurl; }   // pop-up blocked: open in this tab instead
       } else {
         location.href = `mailto:${MAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(lines)}`;
+        if (note) note.hidden = false;   // visitors without a mail app still have a way to reach us
       }
     });
   }
